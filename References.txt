@@ -1,0 +1,15 @@
+List of references - EDA project - Alan Glasper - Version 1.0
+
+[1] https://stackoverflow.com/questions/8317231/elegant-way-to-report-missing-values-in-a-data-frame
+
+[2] http://www.justintools.com/unit-conversion/density.php?k1=milligrams-per-cubic-decimeter&k2=parts-per-million
+
+[3] https://stackoverflow.com/questions/28427572/manipulating-axis-titles-in-ggpairs-ggally
+
+[4] https://stats.stackexchange.com/questions/26920/variable-ordering-using-pca
+
+[5] Book: “Machine Learning with R” by Brett Lanz ISBN 978-1-78216-214-8
+
+[6] https://stackoverflow.com/questions/38220963/how-to-pass-a-variable-name-in-group-b
+
+[7] https://stackoverflow.com/questions/41783396/passing-arguments-to-dplyr-summarize-function

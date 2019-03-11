@@ -1,0 +1,2190 @@
+---
+title: "Exploration of white wine quality data"
+author: "Alan Glasper"
+date: "March 10th 2019"
+output:
+   html_document:
+      toc: true
+      toc_depth: 1
+      fig_caption: TRUE
+---
+
+\tableofcontents
+
+##  Introduction
+
+I am exploring the white wine data set to find interesting patterns and
+to expore the most important variables in predicting subjective wine quality. 
+
+I decided not to research known relationships between physicochemical properties
+or attempts by others at predicting wine quality, but rather let the data speak
+for itself, in order to minimize bias. I will develop some models for
+predicting quality and at a later stage compare my findings with those of the 
+original paper on this dataset by Cohen et al. 
+
+First I am going to look at the structure of the data, the data types and some 
+basic descriptive statistics. I want to check for any missing data or other
+data quality issues.
+
+```{r global-options, include=FALSE, echo=FALSE, messages=FALSE, warning=FALSE}
+
+# set the global options here.
+knitr::opts_chunk$set(echo = FALSE,
+                      cache = FALSE,
+                      messages = FALSE,
+                      warning = FALSE,
+                      tidy = TRUE,
+                      width = 80,
+                      fig.align = "Center",
+                      fig.retina = 2)
+
+```
+
+Options have been set, now load packages. 
+
+```{r packages, include=FALSE, echo=FALSE, messages=FALSE, warning=FALSE}
+
+# Load needed packages. If needed, install them. 
+
+if (!require(Rmisc)) {
+  install.packages('Rmisc')
+  library(Rmisc)
+}
+if (!require(lazyeval)) {
+  install.packages('lazyeval')
+  library(lazyeval)
+}
+if (!require(ggplot2)) {
+  install.packages('ggplot2')
+  library(ggplot2)
+}
+if (!require(ggthemes)) {
+  install.packages('ggthemes')
+  library(ggthemes)
+}
+if (!require(gridExtra)) {
+  install.packages('gridExtra')
+  library(gridExtra)
+}
+if (!require(GGally)) {
+  install.packages('GGally')
+  library(GGally)
+}
+if (!require(corrgram)) {
+  install.packages('corrgram')
+  library(corrgram)
+}
+if (!require(psych)) {
+  install.packages('psych')
+  library(psych)
+}
+if (!require(RColorBrewer)) {
+  install.packages('RColorBrewer')
+  library(RColorBrewer)
+}
+if (!require(rpart)) {
+  install.packages('rpart')
+  library(rpart)
+}
+if (!require(rpart.plot)) {
+  install.packages('rpart.plot')
+  library(rpart.plot)
+}
+if (!require(caret)) {
+  install.packages('caret')
+  library(caret)
+}
+if (!require(dplyr)) {
+  install.packages('dplyr')
+  library(dplyr)
+}
+```
+
+Loading the helper functions. Used references [6] and [7] in constructing these. 
+
+```{r helper-functions}
+
+theme_set(theme_minimal(8))  # 8 is the font size
+
+# Set up a quick basic histogram plot helper function.
+# Uses mostly defaults for a quick look at the distribution.
+
+quickhist <- function(ds, dscol) {
+  # (dataset) ds is a dataset
+  # (string) dscol is a column in the dataset, e.g. dataset$column
+  # returns the plot
+  result <- ggplot(aes(dscol), data = ds) +
+  geom_histogram(color = 'black', fill = '#099DD9', bins = 50) +
+  scale_x_continuous()
+  return(result)
+}
+
+# Set up a basic mean plot and box plot helper function.
+# Provides a first look at statistics of a value by category.
+
+mean_box <- function(ds, dsvcol, dsccol) {
+  # Display a combined mean with 95% C.I. and box plot graphic
+  # for a dataset where value and category columns are named.
+  
+  # (dataset) ds is a dataset
+  # (string) dsvcol is the name of a continuous value column in the dataset
+  # (String) dsccol is the name of a type category column in the dataset
+  # returns the plot as a FacetGrid
+  
+ stats_table <- ds %>%
+   group_by_(.dots=dsccol) %>%
+   dplyr::summarize_(var_mean = interp(~ mean(var), var = as.name(dsvcol)),
+                    upper_ci = interp(~ CI(var)[1], var = as.name(dsvcol)),
+                    lower_ci = interp(~ CI(var)[3], var = as.name(dsvcol)))
+ 
+ fa1 <- ggplot(aes_string(x=dsccol, y="var_mean"), data=stats_table) +
+   geom_point(size=4, shape=21, fill="blue") +
+   geom_errorbar(mapping=aes_string(x=dsccol, 
+                                    ymin="upper_ci", 
+                                    ymax="lower_ci"), 
+                 width=0.2, size=1, data=stats_table) +
+   ylab(paste('mean',dsvcol,'with 95% C.I.'));
+ 
+ fa2 <- ggplot(aes_string(x=dsccol, y=dsvcol), data=ds) +
+   geom_boxplot(color = 'black', fill = '#099DD9');
+ 
+ grid.arrange(fa1, fa2, ncol=2);
+}
+
+
+# Display a quick scatterplot.
+
+quickscatter <- function(ds, xvar, yvar, title) {
+  # creates a quick scatterplot
+  # (dataset) ds is a dataset
+  # (string) xvar is the name of a continuous value column for x-axis
+  # (String) yvar is the name of a continuous value column for y-axis
+  # (String) title is a title for the graphic
+  # returns the plot
+  
+  g1 <- ggplot(aes_string(x = xvar, y = yvar), data = ds) +
+	geom_point(color = '#F79420', alpha = 1/4) +
+	stat_smooth(method = 'lm') +
+  ggtitle(title)
+}
+
+# Set up a helper function for looking at counts and ratios.
+
+quickratio <- function(nom, denom) {
+  # prints counts and shares
+  # (int) nom is the nominator of the ratio
+  # (int) denom is the denominator of the ratio
+  # e.g. quickratio(2,4) displays "Count: 2 of 4, Share: 50.00%"
+  # returns the output
+  
+  sprintf('Count: %i of %i, Share: %1.2f%%',nom, denom, 100*(nom/denom))
+}
+
+```
+
+### Data used for this analysis
+
+The data is contained in a file "wineQualityWhites.csv".
+
+This dataset is public, available for research. The details are described in:
+
+  P. Cortez, A. Cerdeira, F. Almeida, T. Matos and J. Reis. 
+  Modeling wine preferences by data mining from physicochemical properties.
+  In Decision Support Systems, Elsevier, 47(4):547-553. ISSN: 0167-9236.
+
+There are 11 physicochemical variables recorded from tests.
+
+   1 - fixed acidity (tartaric acid - g / dm^3)
+   
+   2 - volatile acidity (acetic acid - g / dm^3)
+   
+   3 - citric acid (g / dm^3)
+   
+   4 - residual sugar (g / dm^3)
+   
+   5 - chlorides (sodium chloride - g / dm^3
+   
+   6 - free sulfur dioxide (mg / dm^3)
+   
+   7 - total sulfur dioxide (mg / dm^3)
+   
+   8 - density (g / cm^3)
+   
+   9 - pH
+   
+   10 - sulphates (potassium sulphate - g / dm^3)
+   
+   11 - alcohol (% by volume)
+
+(Any information below on the physicochemical variables is from the Udacity
+project data description).
+
+Related to each wine is an evaluation of the quality which is a score between
+0 and 10. There are at least three ratings and the median of these is taken
+(I assume an odd number of ratings as there are only whole integers).
+
+I want to find out any relationships between the physicochemical variables
+themselves and between them and the quality, and then the relative 
+importance of the variables in a potential prediction model.
+
+Loading the data and looking at the structure.
+
+```{r load-the-data}
+
+ww <- read.csv('wineQualityWhites.csv')
+
+str(ww)
+
+```
+
+Calculate statistics for each variable. 
+
+```{r statistics-per-variable}
+
+summary(ww)
+
+```
+
+X just seems to be an identifier giving the row/observation number. 
+The only other integer is the quality, which is known to be on an ordinal 
+scale from 0 to 10.
+
+The X column can be dropped. 
+
+```{r drop-the-index-column}
+
+ww <- subset(ww, select = -X)
+
+```
+
+The quality column has a data type of int, but it might be better analyzed as 
+an ordered category. To get the best of both worlds, add a version of the 
+quality column that is ordered category.
+
+```{r create-quality-as-factors}
+
+ww$quality.cat <- as.factor(ww$quality)
+
+```
+
+There is at least one value where citric acid has a value of zero. 
+This might be actually zero or a trace amount rounded down to zero.
+Check how many rows that is. If not too many, take a look at them. 
+
+```{r check-citric-zero-values}
+
+zeroCitric <- subset(ww, citric.acid == 0)
+zeroCitric
+```
+
+There is nothing about the other values that suggests this is a special group of 
+some kind, so I'll simply accept the values are valid: no citric acid.
+
+Back to the set of statistics.
+There are some large maximum values compared to the medians:
+residual.sugar, chlorides, free.sulfur.dioxide, and to a lesser degree
+total.sulfur.dioxide. I'll look closer at these in the univariate analysis.
+
+Need to check whether there are any missing values.
+
+```{r check-for-missing-values}
+
+# Check for missing values and deal with them.
+# Used an idea from reference [1] (see final section).
+
+sapply(ww, function(x) sum(is.na(x)))
+
+```
+Nothing missing, so on with the plotting. 
+
+
+# Univariate Plots Section
+
+To get a feel for the values, create a view of the first rows.
+
+```{r overview-of-first-rows}
+
+head(ww)
+
+```
+
+I can use the granularity shown to zoom in on the plots. 
+I will make a quick visualization with the helper function, then zoom in. 
+I will try to see the finest level of detail to check for patterns.
+
+## Fixed acidity
+Most acids involved with wine are fixed or nonvolatile (do not evaporate 
+readily). 
+
+```{r uni-fixed, echo=FALSE, messages=FALSE, warning=FALSE}
+
+q1 <- quickhist(ww, ww$fixed.acidity)
+q2 <- ggplot(aes(x = fixed.acidity), data = ww) +
+  geom_histogram(binwidth = 0.01, color = 'black', fill = '#099DD9') +
+  scale_x_continuous(limits = c(5, 9), breaks = seq(5, 9, 0.2))
+grid.arrange(q1, q2, ncol=1)
+
+```
+
+The tiny spikes in between the values at 0.1 granularity indicate some values have another decimal place. Look at the individual values.
+
+```{r uni-fixed-table}
+
+table(ww$fixed.acidity)
+
+```
+
+There are a few x.x5 values that fall midway between two x.x values, 
+e.g. 6.1, 6.15, 6.2. The frequencies of even numbers are higher in general than
+those of odd numbers and the x.x5 values do not make up the difference. 
+So there are some rounding effects here or some effect of the equipment output. 
+If this occurs in other variables it won't be commented on further. There is
+no reason to standardize/round the values, as this would just remove 
+information. Decided to leave them as they are. 
+
+## Volatile acidity
+The amount of acetic acid in wine, which at too high of levels can lead to an 
+unpleasant, vinegar taste. But we don't know what "too high" is. 
+
+```{r uni-volatile, echo=FALSE, messages=FALSE, warning=FALSE}
+
+q1 <- quickhist(ww, ww$volatile.acidity)
+q2 <- ggplot(aes(x = volatile.acidity), data = ww) +
+  geom_histogram(binwidth = 0.001, color = 'black', fill = '#099DD9') +
+  scale_x_continuous(limits = c(0.1, 0.5), breaks = seq(0.1, 0.5, 0.02))
+grid.arrange(q1, q2, ncol=1)
+
+```
+
+Only a slight skew to the right. 
+
+Another possibility is to examine the ratio of fixed to volatile acidity. 
+
+## Citric acid
+Found in small quantities, citric acid can add 'freshness' and flavor to wines.
+
+```{r uni-citric, echo=FALSE, messages=FALSE, warning=FALSE}
+
+q1 <- quickhist(ww, ww$citric.acid)
+q2 <- ggplot(aes(x = citric.acid), data = ww) +
+  geom_histogram(binwidth = 0.0001, color = 'black', fill = '#099DD9') +
+  scale_x_continuous(limits = c(0.1, 0.6), breaks = seq(0.1, 0.6, 0.02))
+grid.arrange(q1, q2, ncol=1)
+
+```
+
+It seems that there is a much larger number of one value than its position in
+the distribution would expect. Again, let's look at the values.
+
+```{r uni-citric-table}
+
+table(ww$citric.acid)
+
+```
+
+So there are 215 values of 0.49 compared to neighbours of 39 and 35. That's
+an anomaly that merits investigation. Filter out these values and check the
+distribution of the other variables.
+
+```{r uni-citric-spike}
+
+spikeCitric <- subset(ww, citric.acid == 0.49)
+summary(spikeCitric)
+
+```
+
+Nothing stands out from scanning the data. Perhaps there was for some
+wines a carefully controlled process for exactly this level of citric acid. 
+
+## Residual sugar
+The amount of sugar remaining after fermentation stops. It's rare to find wines 
+with less than 1 gram/liter and wines with greater than 45 grams/liter are 
+considered sweet. The values are in grams per cubic decimeter, which is the 
+same as grams per liter. How many sweet wines are there by this definition?
+
+```{r uni-sugar-sweet}
+
+sweetWines <- subset(ww, residual.sugar > 45)
+sweetWines
+
+```
+
+Just one wine with a value of 65.8 would be considered sweet by this definition,
+which seems improbable but may have something to do with how the wines for this 
+data set were selected. 
+According to Wikipedia, in the EU the following thresholds apply:
+dry:  < 4g/l
+medium dry 4-12g/l
+medium 12-45g/l
+sweet > 45g/l
+
+```{r uni-sugar, echo=FALSE, messages=FALSE, warning=FALSE}
+
+q1 <- quickhist(ww, ww$residual.sugar)
+q2 <- ggplot(aes(x = residual.sugar), data = ww) +
+  geom_histogram(binwidth = 0.01, color = 'black', fill = '#099DD9') +
+  scale_x_continuous(limits = c(0, 20), breaks = seq(0, 20, 2))
+q3 <- ggplot(aes(x = residual.sugar), data = ww) +
+  geom_histogram(binwidth = 0.001, color = 'black', fill = '#099DD9') +
+  scale_x_continuous(limits = c(0.5, 2.5), breaks = seq(0.5, 2.5, 0.1))
+grid.arrange(q1, q2, q3, ncol=1)
+
+```
+
+This is quite different from the other distributions, that have a more heaped
+and symmetrical distribution. There are some higher frequencies around 1 to 2. 
+
+It has the characteristics of a value that is being targeted, rather than a
+natural random variation. Or perhaps multiple distributions overlayed on
+each other, like particular brands of wine having ranges of sweetness. 
+
+It is rare to find wines with less than 1. How many of those are there?
+
+```{r uni-sugar-rare-residuals}
+
+rareResiduals <- subset(ww, residual.sugar < 1)
+quickratio(nrow(rareResiduals), nrow(ww))
+
+```
+
+77 out of 4898 can be considered rare. Ca. 1.6% seems ok. 
+
+Maybe this data doesn't follow a more "normal" distribution because of attempts
+to create a low residual sugar and keep the wine dry. It might be a candidate
+for transformation, but it seems more like two superimposed distributions than
+one skewed distribution. One distribution below 20, superimposed with one
+distribution below 2. 
+
+## Chlorides
+The amount of salt in the wine. 
+
+```{r uni-chlorides, echo=FALSE, messages=FALSE, warning=FALSE}
+
+q1 <- quickhist(ww, ww$chlorides)
+q2 <- ggplot(aes(x = chlorides), data = ww) +
+  geom_histogram(binwidth = 0.00001, color = 'black', fill = '#099DD9') +
+  scale_x_continuous(limits = c(0.01, 0.07), breaks = seq(0.01, 0.07, 0.005))
+grid.arrange(q1, q2, ncol=1)
+
+```
+
+A well-balanced distribution with a few large outliers. 
+
+## Free sulfur dioxide (SO2)
+The free form of SO2 exists in equilibrium between molecular SO2 (as a
+dissolved gas) and bisulfite ion; it prevents microbial growth and the 
+oxidation of wine. In low concentrations, SO2 is mostly undetectable in wine, 
+but at free SO2 concentrations over 50 ppm, SO2 becomes evident in the nose 
+and taste of wine.
+
+```{r uni-free-so2, echo=FALSE, messages=FALSE, warning=FALSE}
+
+q1 <- quickhist(ww, ww$free.sulfur.dioxide)
+q2 <- ggplot(aes(x = free.sulfur.dioxide), data = ww) +
+  geom_histogram(binwidth = 0.01, color = 'black', fill = '#099DD9') +
+  scale_x_continuous(limits = c(0, 90), breaks = seq(0, 90, 5))
+grid.arrange(q1, q2, ncol=1)
+
+```
+
+Again, fairly well balanced, with a few large outliers.
+
+How many wines have a concentration over 50 ppm? I used reference [2] to check 
+the conversion to the units of the provided data. The conversion is 1:1. 
+
+In relation to the base unit of density (kilograms per cubic meter):
+
+1 Part Per Million (ppm) = 0.001 kilograms-per-cubic-meter
+
+1 Milligram Per Cubic Decimeter (mg/dm3) = 0.001 kilograms-per-cubic-meter.
+
+```{r uni-free-so2-high}
+
+nosyWines <- subset(ww, free.sulfur.dioxide > 50)
+summary(nosyWines)
+quickratio(nrow(nosyWines), nrow(ww))
+
+```
+
+So ca. 18% may have a noticeable bad odour.
+
+It would be interesting to see if these wines are rated lower compared to the
+rest. 
+
+```{r uni-free-so2-low}
+
+nonNosyWines <- subset(ww, free.sulfur.dioxide <= 50)
+cat('Up to 50 has mean:', mean(nonNosyWines$quality),
+    'Above 50 has mean:', mean(nosyWines$quality))
+
+```
+
+Which does confirm the idea that above 50 there is a noticeable bad odour,
+so quality ratings are lower. 
+Could run a test to confirm the difference is significant, but not now. 
+The counts are large enough to support the idea.
+
+## Total sulfur dioxide (SO2)
+Amount of free and bound forms of SO2. 
+
+```{r uni-total-so2, echo=FALSE, messages=FALSE, warning=FALSE}
+
+q1 <- quickhist(ww, ww$total.sulfur.dioxide)
+q2 <- ggplot(aes(x = total.sulfur.dioxide), data = ww) +
+  geom_histogram(binwidth = 0.01, color = 'black', fill = '#099DD9') +
+  scale_x_continuous(limits = c(0, 250), breaks = seq(0, 250, 10))
+grid.arrange(q1, q2, ncol=1)
+
+```
+
+Mostly symmetrical with a slight skew. No real need to transform.
+
+## New variable: Bound sulfur dioxide
+Since Total Sulfur Dioxide includes Free and Bound forms a new variable can be 
+created which is: 
+Bound Sulfur Dioxide = Total Sulfur Dioxide - Free Sulfur Dioxide.
+
+```{r uni-bound-so2, echo=FALSE, messages=FALSE, warning=FALSE}
+
+ww$bound.sulfur.dioxide = ww$total.sulfur.dioxide - ww$free.sulfur.dioxide
+
+q1 <- quickhist(ww, ww$bound.sulfur.dioxide)
+q2 <- ggplot(aes(x = bound.sulfur.dioxide), data = ww) +
+  geom_histogram(binwidth = 0.01, color = 'black', fill = '#099DD9') +
+  scale_x_continuous(limits = c(0, 250), breaks = seq(0, 250, 10))
+grid.arrange(q1, q2, ncol=1)
+
+```
+
+This variable could be used together with Free Sulfur Dioxide. 
+Another possibility is to examine the proportion of free to bound sulfur 
+dioxide as a variable. 
+
+## Density
+The density of wine is close to that of water, depending on the percent 
+alcohol and sugar content.
+
+```{r uni-density, echo=FALSE, messages=FALSE, warning=FALSE}
+
+q1 <- quickhist(ww, ww$density)
+q2 <- ggplot(aes(x = density), data = ww) +
+  geom_histogram(binwidth = 0.000001, color = 'black', fill = '#099DD9') +
+  scale_x_continuous(limits = c(0.985, 1.005), 
+                     breaks = seq(0.98, 1.0035, 0.005))
+q3 <- ggplot(aes(x = density), data = ww) +
+  geom_histogram(binwidth = 0.000001, color = 'black', fill = '#099DD9') +
+  scale_x_continuous(limits = c(0.993, 0.994), 
+                     breaks = seq(0.993, 0.994, 0.0001))
+grid.arrange(q1, q2, q3, ncol=1)
+
+```
+
+Again, there are some values that were probably already rounded and so occur
+more frequently. 
+
+## pH
+Describes how acidic or basic a wine is on a scale from 0 (very acidic) to 14 
+(very basic); most wines are between 3-4 on the pH scale.
+
+```{r uni-pH, echo=FALSE, messages=FALSE, warning=FALSE}
+
+q1 <- quickhist(ww, ww$pH)
+q2 <- ggplot(aes(x = pH), data = ww) +
+  geom_histogram(binwidth = 0.0001, color = 'black', fill = '#099DD9') +
+  scale_x_continuous(limits = c(2.7, 3.8), breaks = seq(2.7, 3.8, 0.1))
+grid.arrange(q1, q2, ncol=1)
+
+```
+
+Compared to the description of "most wines are between 3 and 4", this 
+distribution is somewhat further towards the 3 value, but otherwise no
+particular anomalies. 
+
+## Sulphates
+A wine additive which can contribute to sulfur dioxide gas (S02) levels, 
+which acts as an antimicrobial and antioxidant.
+
+```{r uni-sulphates, echo=FALSE, messages=FALSE, warning=FALSE}
+
+q1 <- quickhist(ww, ww$sulphates)
+q2 <- ggplot(aes(x = sulphates), data = ww) +
+  geom_histogram(binwidth = 0.0001, color = 'black', fill = '#099DD9') +
+  scale_x_continuous(limits = c(0.2, 0.8), breaks = seq(0.2, 0.8, 0.1))
+grid.arrange(q1, q2, ncol=1)
+
+```
+
+Mostly symmetrical with a slight skew. No real need to transform.
+The appearance of being bimodal is due to an unusually high number of 0.38 
+results. There is a higher number of 0.50 results which may be due to some 
+rounding.
+
+## Alcohol
+The percent alcohol content of the wine. Wine tends to be between 9 and 16%. 
+
+```{r uni-alcohol, echo=FALSE, messages=FALSE, warning=FALSE}
+
+q1 <- quickhist(ww, ww$alcohol)
+q2 <- ggplot(aes(x = alcohol), data = ww) +
+  geom_histogram(binwidth = 0.001, color = 'black', fill = '#099DD9') +
+  scale_x_continuous(breaks = seq(8, 14, 0.5))
+grid.arrange(q1, q2, ncol=1)
+
+```
+
+There seem to be two or three modes in the distribution. This may be caused by 
+attempts to achieve a particular alcohol content. E.g. around 9.5, 10.5 and 
+12.5. Some peaks may also be due to rounding, e.g. 10.0, 10.5, 11.0, 12.0, 12.5. 
+
+Like residual sugar, it has the characteristics of a value that is being
+targeted, rather than a natural random variation. 
+
+Check the relationship between alcohol content and residual sugar. I believe
+that high alcohol corresponds with low residual sugar because more is used in 
+the fermentation. 
+
+This is a distribution without outliers, which is probably good for the 
+customers!
+
+## Quality
+The subjective rated quality of the wine. 
+The quality rating is the median of three independent ratings on a 
+scale of 0 to 10.
+
+```{r uni-quality, echo=FALSE, messages=FALSE, warning=FALSE}
+
+q1 <- quickhist(ww, ww$quality)
+q2 <- ggplot(aes(x = quality), data = ww) +
+  geom_histogram(binwidth = 0.001, color = 'black', fill = '#099DD9') +
+  scale_x_continuous(breaks = seq(1, 10, 1))
+
+grid.arrange(q1, q2, ncol=1)
+
+```
+
+Confirms that the ratings are whole integers. 
+
+```{r uni-quality-summary}
+
+summary(ww$quality)
+
+```
+
+There are no 0s, 1s, 2s, or 10s. These are extremely bad or good ratings
+and may also be missing due to the way in which the median of the scores of
+at least 3 assessors are used. So it is hard to get 0 or 10. 
+
+The distribution seems well-balanced with a range of values covering all usual
+quality levels, which will help find relationships between quality and the 
+other variables. The mode (and median) is 6, so slightly in favour of better 
+wines, but no issue.
+
+```{r uni-quality-value-counts}
+
+table(ww$quality)
+
+```
+
+Looking at the frequency of each category there are only 5 wines behind the 
+9 rating and 20 behind the 3 rating. Those are small sample sizes. 
+
+# Univariate Analysis
+
+### The structure of the dataset
+
+There are 11 continuous variables representing measurements of various 
+physicochemical properties, plus a variable representing the subjective 
+assessment of the wine quality (using an ordinal discrete scale from 0 to 10).
+There is an additional variable (X) that is simply a row index and so was 
+dropped. 
+
+There are 4898 rows of data, each representing a wine that was measured and 
+assessed.
+
+### The main feature(s) of interest
+
+The quality variable is most important as the intention of the dataset
+is to enable quality to be predicted through the other variables.
+
+All the other variables are potential explanatory variables. Most of the 
+variables show a somewhat gaussian distribution, which might imply that 
+these are not particularly "steered" during the winemaking process. 
+
+Of main interest would be those 7 explanatory variables that intuitively most 
+likely influence taste:
+- Residual Sugar i.e. sweetness.
+- Alcohol i.e. strength of alcohol.
+- Volatile Acidity i.e. vinegar-like taste.
+- Citric Acid i.e. freshness and flavor.
+- Free Sulfur Dioxide (evident in "nose" and taste of wine at high 
+concentrations).
+- Chlorides i.e. saltiness.
+
+### Other features that will support investigation of feature(s) of interest?
+
+The other 4 features are of secondary interest, but the more extreme values 
+need to be considered. Total Sulfur Dioxide includes "Free" and "Bound" forms, 
+but intuitively it is the free forms that impact taste and smell. The bound 
+forms were calculated as an additional variable. Similarly, volatile acidity 
+intuitively affects taste and smell more than fixed acidity.
+
+### New variables created from existing variables
+Since Total Sulfur Dioxide includes Free and Bound forms a new variable was 
+created which was:
+
+Bound Sulfur Dioxide = Total Sulfur Dioxide - Free Sulfur Dioxide.
+
+### Unusual distributions
+
+Residual Sugar and Alcohol show distributions that might be a result of 
+specific interventions to achieve a specific classification. For example, 
+residual sugar determines whether the wine can be labeled "dry", "sweet", etc.
+
+### Operations to tidy, adjust, or change the form of the data
+
+Although there were a few extreme values in the data, these were left in for 
+now. None of the distributions suggested there would be an advantage in 
+transformations.
+
+# Bivariate Plots Section
+
+For the rest of the analysis, shorten the column names. They are:
+
+```{r bi-colnames-ww}
+
+colnames(ww)
+
+```
+
+to be shortened to:
+
+```{r bi-shorten-colnames}
+
+# For convenience, shorten the sulfur dioxide column names
+
+colnames(ww)[1] <- "fixed"
+colnames(ww)[2] <- "volatile"
+colnames(ww)[3] <- "citric"
+colnames(ww)[4] <- "sugar"
+colnames(ww)[6] <- "free.so2"
+colnames(ww)[7] <- "total.so2"
+colnames(ww)[14] <- "bound.so2"
+colnames(ww)
+
+```
+
+Lets's look in detail at each relationship with quality. 
+
+### Relationships with main output feature (quality or quality.cat)
+The following relationships are interesting: 
+quality.cat and each of the explanatory variables.
+
+## Alcohol
+
+```{r bi-quality-alcohol}
+
+mean_box(ww, "alcohol", "quality.cat")
+
+```
+
+Alcohol has a clear relationship with quality. The 'dip' in the middle is 
+interesting. Maybe there are relationships for 'above average' and 'below 
+average' quality wines and both involve an increase in alcohol away from the 
+average. 
+
+## Sulphates
+
+```{r bi-quality-sulphates}
+
+mean_box(ww, "sulphates", "quality.cat")
+
+
+```
+
+There is a linear relationship from 5 to 7 not visible in the medians, but 
+otherwise uncertain. 
+
+## pH
+
+```{r bi-quality-ph}
+
+mean_box(ww, "pH", "quality.cat")
+
+```
+
+A linear relationship from 5 to 7, uncertain with other categories.  
+
+## Density
+
+```{r bi-quality-density}
+
+mean_box(ww, "density", "quality.cat")
+
+```
+
+Zoom in on the box plot. 
+
+```{r bi-quality-density-zoom}
+
+ggplot(aes(x = quality.cat, y = density), data = ww) +
+  geom_boxplot(color = 'black', fill = '#099DD9') + 
+  coord_cartesian(ylim = (xlim = c(0.99, 1.005)));
+
+```
+
+This is a clear linear relationship for 5 and above, slightly disrupted by 
+category 4. 
+
+## Free sulfur dioxide (SO2)
+
+```{r bi-quality-free-so2}
+
+mean_box(ww, "free.so2", "quality.cat")
+
+```
+
+Zoom in on the box plot. 
+
+```{r bi-quality-free-so2-zoom}
+
+ggplot(aes(x = quality.cat, y = free.so2), data = ww) +
+  geom_boxplot(color = 'black', fill = '#099DD9') + 
+  coord_cartesian(ylim = (xlim = c(0, 100)));
+
+```
+
+No significant relationship but interesting that low levels relate to 
+category 4, because it is the high levels of free so2 that are supposed to be 
+detectable. 
+
+## Bound sulfur dioxide (SO2)
+
+```{r bi-quality-bound-so2}
+
+mean_box(ww, "bound.so2", "quality.cat")
+
+```
+
+A similar pattern to density, again with category 4 not agreeing with the 
+linear relationship. 
+
+## Total sulfur dioxide (SO2)
+
+```{r bi-quality-total-so2}
+
+mean_box(ww, "total.so2", "quality.cat")
+
+```
+
+Since free sulfur dioxide showed no particular pattern over the quality 
+categories, the pattern here in total is driven by the bound part. So total 
+and bound look similar and are highly correlated.
+
+## Chlorides
+
+```{r bi-quality-chlorides}
+
+mean_box(ww, "chlorides", "quality.cat")
+
+```
+
+Zoom in on the box plot. 
+
+```{r bi-quality-chlorides-zoom}
+
+ggplot(aes(x = quality.cat, y = chlorides), data = ww) +
+  geom_boxplot(color = 'black', fill = '#099DD9') + 
+  coord_cartesian(ylim = (xlim = c(0, 0.1)));
+
+```
+
+Chlorides show a clear linear relationship with quality. 
+
+## Residual sugar
+
+```{r bi-quality-sugar}
+
+mean_box(ww, "sugar", "quality.cat")
+
+```
+
+Zoom in on the box plot. 
+
+```{r bi-quality-sugar-zoom}
+
+ggplot(aes(x = quality.cat, y = sugar), data = ww) +
+  geom_boxplot(color = 'black', fill = '#099DD9') + 
+  coord_cartesian(ylim = (xlim = c(0, 25)));
+
+```
+
+Again, some linear relationship from 5 to 7, disrupted by category 4 and to 
+some extent 8. 
+
+## Citric acid
+
+```{r bi-quality-citric}
+
+mean_box(ww, "citric", "quality.cat")
+
+```
+
+Zoom in on the box plot. 
+
+```{r bi-quality-citric-zoom}
+
+ggplot(aes(x = quality.cat, y = citric), data = ww) +
+  geom_boxplot(color = 'black', fill = '#099DD9') + 
+  coord_cartesian(ylim = c(0, 0.7)) 
+
+```
+
+The differences between categories are minimal and 4 again is an exception.  
+
+## Volatile acidity
+
+```{r bi-quality-volatile}
+
+mean_box(ww, "volatile", "quality.cat")
+
+```
+
+Again an interesting "dip" around 6 and 7. Given the confidence intervals, it 
+could be argued that for 6 and above higher quality is not related to lower 
+volatile acidity, but higher volatile acidity does relate to lower quality 
+ratings. This could be an example where the effect of a variable is non-linear
+- high levels lead to poor quality, low levels do not lead to a higher 
+quality. This might partition the results at around 0.26 volatile acidity. 
+
+## Fixed acidity
+
+```{r bi-quality-fixed}
+
+mean_box(ww, "fixed", "quality.cat")
+
+```
+
+This shows a clear linear relationship with quality. 
+
+An overview of just the correlations would be helpful. Let's use corrgram. 
+
+```{r corrgram}
+
+# Order=TRUE enables ordering by principal components.
+corrgram(ww, order=TRUE, lower.panel=panel.shade,
+  upper.panel=panel.pie, text.panel=panel.txt,
+  main="Overview of complete ww dataframe")
+
+```
+
+The variables have been "effect-ordered" using principal component analysis 
+of the correlation matrix, such that variables correlating are clustered 
+together. See reference [4].
+
+There are strong correlations between sugar and density (positive) and 
+between alcohol and density (negative). The relationships between these
+three need to be explored. 
+
+Alcohol has the strongest positive correlation with quality: more is better.
+Most other variables have a negative correlation with quality: less is better.
+
+There is a cluster of positive correlation around total so2, bound so2, sugar 
+and density. Total so2 and the derived variable bound so2 are very strongly
+correlated with each other so that for the models I must choose between them.
+
+I decided to continue with total.so2 since I can then compare the results
+of any models with results from others. It might be interesting in the future
+to see whether using the bound variable would improve model results. 
+
+```{r remove-bound-so2}
+
+ww <- subset(ww, select= -bound.so2)
+
+```
+
+Check interesting relationships between the original explanatory variables. 
+
+```{r correlation-table}
+
+cor(ww[1:11])
+
+```
+
+### Relationships between supporting (explanatory) variables
+
+The following relationships are interesting (r is the correlation coefficient 
+for complete dataset):
+1. density and residual sugar (r = 0.84)
+2. alcohol and density (r = -0.78)
+3. total.so2 and density (r = 0.53)
+4. alcohol and residual sugar (r = -0.45)
+5. total.so2 and alcohol (r = -0.45)
+6. pH and fixed.acidity (r = -0.43)
+
+Since we now have a reasonable number of factors (6), let's use pairs in the 
+psych package to look at them.  
+
+```{r psych-pairs-key-variables}
+
+focusColumns = c("density", "sugar", "alcohol", "total.so2",  "pH", "fixed")
+psych::pairs.panels(ww[focusColumns], stars=TRUE, show.points=FALSE)
+
+```
+
+The lower part shows bivariate 68% concentration ellipses and loess smoothing 
+curves so we can see where the most data lies and how much slope in that 
+region. 
+
+pH does not correlate with any variables except fixed acidity and that might
+be because pH itself is a scale of base vs acidity. 
+
+For each combination, we'll generate two plots: one with the full data and one 
+with a random 500 sample. 
+
+```{r sample-dataset}
+
+ww_sample <- ww[sample(1:length(ww$quality), 500), ]
+
+```
+
+####1. density and residual sugar (r = 0.84)
+
+```{r bi-density-sugar}
+
+g1 <- quickscatter(ww, "density", "sugar", "Full dataset")
+
+g2 <- quickscatter(ww_sample, "density", "sugar", "Sample from dataset")
+
+grid.arrange(g1, g2, ncol=2)
+
+```
+
+There is a rather extreme outlier in the data. 
+
+```{r bi-density-sugar-outlier}
+
+filter(ww, density > 1.02)
+
+```
+
+Leave it in the dataset for now on the assumption that all values are valid 
+and verified. Given the size of the dataset and that the outlier is not 
+extremely far away from the rest of the 'cloud' (not necessarily a corrupt 
+value), it shouldn't skew the values too much and is in category 6 where there 
+is plenty of other data to reduce its effect. 
+
+There is a concentration 'band' of values at the lower end of the residual 
+sugar range, just above zero. So, regardless of density, some effect causes 
+these to be more frequent. 
+
+####2. alcohol and density (r = -0.78)
+
+```{r bi-alcohol-density}
+
+g1 <- quickscatter(ww, "alcohol", "density", "Full dataset")
+
+g2 <- quickscatter(ww_sample, "alcohol", "density", "Sample from dataset")
+
+grid.arrange(g1, g2, ncol=2)
+
+```
+
+Strong linear relationship. The large outlier has already been examined.
+
+####3. total so2 and density (r = 0.50)
+
+```{r bi-total-so2-density}
+
+g1 <- quickscatter(ww, "total.so2", "density", "Full dataset")
+
+g2 <- quickscatter(ww_sample, "total.so2", "density", "Sample from dataset")
+
+grid.arrange(g1, g2, ncol=2)
+
+```
+Moderate linear relationship. The large outlier has already been examined.
+
+####4. alcohol and residual sugar (r = -0.45)
+
+```{r bi-alcohol-sugar}
+
+g1 <- quickscatter(ww, "alcohol", "sugar", "Full dataset")
+
+g2 <- quickscatter(ww_sample, "alcohol", "sugar", "Sample from dataset")
+
+grid.arrange(g1, g2, ncol=2)
+
+```
+
+This is a less natural relationship as there is banding at the lower levels 
+of sugar as itapproaches zero. There may be a limit in how much sugar can be 
+reduced. There are also many cases where both low alcohol and low sugar occur. 
+
+####5. total so2 and alcohol (r = -0.45)
+
+```{r bi-total-so2-alcohol}
+
+g1 <- quickscatter(ww, "total.so2", "alcohol", "Full dataset")
+
+g2 <- quickscatter(ww_sample, "total.so2", "alcohol", "Sample from dataset")
+
+grid.arrange(g1, g2, ncol=2)
+
+```
+
+Moderate linear relationship with some asymmetry of the 'cloud'. 
+
+####6. pH and fixed acidity (r = -0.43)
+
+```{r bi-ph-fixed}
+
+g1 <- quickscatter(ww, "pH", "fixed", "Full dataset")
+
+g2 <- quickscatter(ww_sample, "pH", "fixed", "Sample from dataset")
+
+
+grid.arrange(g1, g2, ncol=2)
+
+```
+
+Moderate linear relationship.  
+
+# Bivariate Analysis
+
+### Relationships observed: feature of interest vs. other features
+
+Of the explanatory variables, 9 show a clear relationship with the quality 
+categories. The two that don't were: free so2 and citric acid. By 
+"clear relationship" I mean I can see a consistent relationship with some of 
+the categories and by looking at the confidence intervals rather than the 
+mean, I can imagine the relationship holding if the sample size were larger 
+(of course a confidence interval is not a prediction interval!). This visual 
+approximation was made at the upper and lower categories (3,4,8,9), which 
+include fewer wines. Looking at the frequencies again:
+
+```{r quality-category-value-counts}
+
+table(ww$quality)
+
+```
+
+There are only 5 wines in the 9 category and 20 in the 3 category. 
+
+Volatile acidity had a clear relationship for categories up to 6, then 
+leveled out. 
+
+There were two effects that stood out during the investigation:
+1. The quality category 4 results seem to be an exception for many of the 
+variable relationships. This occurred for: alcohol, residual sugar, density, 
+free so2, total so2, and citric acid. 
+2. There is a 'band' of values around the lower levels of residual sugar 
+(nearing zero), which means they occurred more frequently in the data than 
+the other residual sugar values. We already saw that residual sugar and alcohol 
+have distributions that suggest an intervention taking place, either in the 
+making of the wine or in the selection process of the dataset. There may have 
+been some stratification in the selection process that ensures certain segments 
+of wine were represented. There is no information on this available.
+
+### Interesting relationships between the other features
+
+The scatterplot of total so2 and alcohol showed an asymmetrical regression line 
+through the cloud. This can be investigated further in the multivariate 
+section. 
+
+### The strongest relationship
+
+Visually, the strongest relationship with the quality categories was with 
+alcohol and total sulfur dioxide. Between the explanatory variables, the 
+strongest relationship was between density and residual sugar, closely 
+followed by density and alcohol. 
+
+The relations between density, alcohol and residual sugar can be investigated 
+further in the multivariate section. 
+
+# Multivariate Plots Section
+
+Pick a color-blind friendly color scheme for coding the quality categories. 
+Red means poor quality, blue means good quality. The 7 categories are thus:
+
+```{r category-color-scale, fig.width=3, fig.height=2}
+
+# RdYlBu is a color-blind-friendly palette.
+display.brewer.pal(n = 7, name = "RdBu")
+
+# Set up aesthetics for use in color-coding quality levels.
+geom_quality_colors <- scale_color_brewer(type = 'div',  palette = "RdBu",
+    guide = guide_legend(title = "Quality",
+    override.aes = list(alpha = 1, size = 3)))
+
+```
+
+So average ratings are less intense colors, more divergent for good (blue) and 
+poor (red) ratings have the more intense colors.
+
+First look at alcohol and density. Since presence of alcohol lowers the density,
+put density on the y-axis. 
+
+```{r multi-quality-alcohol-density}
+
+ggplot(aes(x = alcohol, y = density, color = quality.cat), data = ww) + 
+  geom_jitter(alpha = 0.5, width=0.1, size = 1.5) +
+  coord_cartesian(ylim = c(0.985, 1.005)) +
+  geom_smooth(method = "lm", color = "red") +
+  geom_quality_colors +  
+  ggtitle('Density by alcohol and quality')
+
+```
+
+The improvement of quality with reduced density and increased alcohol can be 
+seen. Otherwise there is nothing particularly stratified about the pattern,
+which means that alcohol is decisive for quality perception, not density. 
+One could argue, that there is a tendency for high quality wines (8 or 9)
+to be above the regression line, but it's a small effect. 
+
+Alcohol should partition the data well. 
+
+Now look at alcohol and sugar. Sugar is fermented into alcohol, so put alcohol
+on the y-axis. 
+
+```{r multi-quality-sugar-alcohol}
+
+ggplot(aes(x = sugar, y = alcohol, color = quality.cat), data = ww) + 
+  geom_point(alpha = 0.5, size = 1.5) +
+  coord_cartesian(xlim = c(0, 25), ylim=c(8, 15)) +
+  geom_smooth(method = "lm", color = "red") +
+  geom_quality_colors +  
+  ggtitle('Alcohol by residual sugar and quality')
+
+```
+
+Poor quality is common for all residual sugar levels if the alcohol is low 
+enough. I would expect the lower left corner to be missing, if high alcohol 
+means low sugar. The converse is not seen: high alcohol and high residual sugar. 
+
+Again, alcohol should partition the data well. Or an interaction of alcohol 
+and sugar.
+
+Lets now investigate further the residual sugar-alcohol-density relationship 
+to see whether residual sugar or alcohol as more influence on density. 
+
+```{r multi-quality-sugar-alcohol-density}
+
+ggplot(aes(x = sugar, y = alcohol, color = quality.cat), data = ww) + 
+  geom_point(alpha = 1, size = 1, shape = 16) +
+  coord_cartesian(xlim = c(0, 25)) +
+  facet_wrap(~ cut_number(density, 12)) +
+  geom_smooth(method = "lm", color = "red") +
+  geom_quality_colors +
+  ggtitle('Alcohol by residual sugar, faceted by density')
+
+```
+
+Here we see the relationship between alcohol and residual sugar gradually decreasing as the density
+increases. So sugar doesn't affect density as much as alcohol, or there would be
+more slope in the lines with low alcohol/high density. Let's swap alcohol and density.
+
+```{r multi-quality-density-alcohol-facet-sugar}
+
+ggplot(aes(x = density, y = alcohol, color = quality.cat), data = ww) + 
+  geom_point(alpha = 1, size = 1, shape = 16) +
+  coord_cartesian(xlim = c(0.985, 1.005)) +
+  facet_wrap(~ cut_number(sugar, 12)) +
+  geom_smooth(method = "lm", color = "red") +
+  geom_quality_colors +
+  ggtitle('Alcohol by density, faceted by residual sugar')
+
+```
+
+Here we see the same relationship between alcohol and density holds 
+consistently at all sugar levels. 
+
+I want to look at an example where category 4 did not follow the pattern of 
+the other categories. The biggest disruptive effect was with residual sugar, 
+alcohol, density and total so2. Since residual sugar, density and alcohol are 
+related, I choose residual sugar (y) and total so2 (x). I'm going to facet on 
+quality. 
+
+```{r multi-total-so2-sugar-facet-quality}
+
+ggplot(aes(x = total.so2, y = sugar), data = ww) + 
+  geom_point(alpha = 0.5, size = 0.5, shape = 16) +
+  facet_wrap(~ quality.cat) +
+  geom_smooth(method = "lm", color = "red") +
+  coord_cartesian(ylim = c(0, 25), xlim = c(0, 300)) +
+  ggtitle('Residual sugar by total so2, faceted by quality category')
+
+```
+
+I didn't see anything in category 4 that looks different from the other 
+categories. Try again with alcohol and density. 
+
+```{r multi-alcohol-density-facet-quality}
+
+ggplot(aes(x = alcohol, y = density), data = ww) + 
+  geom_jitter(alpha = 0.5, width=0.1, size = 0.5, shape = 16) +
+  facet_wrap(~ quality.cat) +
+  geom_smooth(method = "lm", color = "red") +
+  coord_cartesian(ylim = c(0.985, 1.005)) +
+  ggtitle('Density by alcohol, faceted by quality category')
+
+```
+
+Again, no clear reason. So the influences on category 4 are more to do with 
+subtle shifts in distributions, which is picked up by the statistics. 
+
+Now let's look at some of the other variables. 
+
+```{r multi-quality-sulphates-total-so2}
+
+ggplot(aes(x = sulphates, y = total.so2, color = quality.cat), data = ww) + 
+  geom_point(alpha = 0.5, size = 1.5) +
+  geom_smooth(method = "lm", color = "red") +
+  coord_cartesian(ylim = c(0, 300)) +
+  geom_quality_colors +  
+  ggtitle('Total so2 by sulphates, and quality')
+
+```
+
+The better ratings tend to be with lower total so2. 
+
+I'm curious if free so2 looks any different. 
+
+```{r multi-quality-free-so2-total-so2}
+
+ggplot(aes(x = free.so2, y = total.so2, color = quality.cat), data = ww) + 
+  geom_point(alpha = 0.5, size = 1.5) +
+  geom_smooth(method = "lm", color = "red") +
+  coord_cartesian(ylim = c(0, 300)) +
+  geom_quality_colors +  
+  ggtitle('Total so2 by free so2, and quality')
+
+```
+
+There is a band of free so2 near 0 that seems to be rated particularly poorly. 
+But then the scores with high total so2 are poor. One could split first by
+one variable then the other, but the total so2 would split more points and
+so would probably be more important in a partitioning model.
+
+```{r multi-quality-fixed-volatile}
+
+ggplot(aes(x = fixed, y = volatile, color = quality.cat), data = ww) + 
+  geom_point(alpha = 0.5, size = 1.5) +
+  geom_smooth(method = "lm", color = "red") +
+  geom_quality_colors +  
+  ggtitle('Volatile acidity by fixed acidity, and quality')
+
+```
+
+There seem to be better ratings at low fixed acidity. 
+High volatile acidity is not so clear but low seem better. 
+It's hard to tell which one would partition better. 
+
+```{r multi-quality-chlorides-ph}
+
+ggplot(aes(x = chlorides, y = pH, color = quality.cat), data = ww) + 
+  geom_point(alpha = 0.5, size = 1.5) +
+  geom_smooth(method = "lm", color = "red") +
+  geom_quality_colors +  
+  ggtitle('pH by chlorides, and quality')
+
+```
+
+This one is more interesting. Low chloride levels (less saltiness) are 
+associated with good ratings. There is a cluster around a pH of 3.2 that have 
+much larger chloride levels than the 'cloud' and these are almost always 
+rated poorly. Should partition well. 
+
+Finally, one of the relationships found earlier: pH and fixed acidity.
+
+```{r multi-quality-fixed-ph}
+
+ggplot(aes(x = fixed, y = pH, color = quality.cat), data = ww) + 
+  geom_point(alpha = 0.5, size = 1.5) +
+  geom_smooth(method = "lm", color = "red") +
+  geom_quality_colors +  
+  ggtitle('pH by fixed acidity, and quality')
+
+```
+
+In general, high pH corresponds to low acidity, so the relationship makes sense.
+There is a tendency for good ratings to be with high pH and low fixed acidity. 
+
+From the visual analysis, it loks like alcohol, total so2, fixed acidity and
+chlorides would be important variables. 
+
+## Multivariate analysis with models
+ 
+At this stage I am going to look at some simple prediction models to try to 
+find out what the most important variables affecting quality are. I am going 
+to model the quality in two ways. Given the large number of samples, although
+quality has ordinal discrete values, it is acceptable to treat quality as a 
+continuous variable. For some models, I wlll try to predict the categorical
+quality values. 
+
+I will use a 70%/30% split to generate a random training and test set. The
+more advanced models with caret will be set up to do n-fold cross-validation 
+using the training set. Where appropriate I will repeat that cross-validation 
+three times. For the continuous models I will look at metrics such as 
+RMSE, R-Squared and MAE, and for the categorical models I will compare
+Accuracy and Kappa values. 
+
+First generate the training and test sets.
+
+```{r model-split-samples}
+
+# Take 70% of the sample for training, the rest for test
+set.seed(42)
+
+sample <- sample(seq_len(nrow(ww)), size = floor(.70 * nrow(ww)), 
+                 replace = FALSE)
+treeTrain <- ww[sample, ]
+treeTest  <- ww[-sample, ]
+```
+
+Now set up formulae for predicting the continuous and categorical quality.
+
+```{r model-define-formulae}
+
+# Set up the formulae for the two types of predictors. 
+# Continuous uses quality, category uses quality.cat.
+
+formula_continuous <- reformulate(colnames(ww[1:11]), colnames(ww[12]))
+formula_category <- reformulate(colnames(ww[1:11]), colnames(ww[13]))
+formula_continuous
+formula_category
+
+```
+
+Using the continuous formula, start simple with a rpart model
+(Recursive Partitioning And Regression Trees). 
+
+First ignore the penalties and see how the complexity parameter (cp) varies
+with reducing the relative error. 
+
+```{r model-rpart-no-penalties}
+
+# Requires formula format.
+modelTree <- rpart(formula_continuous, data = treeTrain, 
+                   control = list(cp = 0))
+
+plotcp(modelTree)
+abline(v = 5, lty = "dashed")
+
+```
+
+I saw visually the optimum around 5 and added a reference line at that value.
+Optimization should stop at around 5 nodes. Now let the caret package decide. 
+
+```{r model-rpart-optimum}
+
+modelTree <- rpart(formula_continuous, data = treeTrain)
+
+plotcp(modelTree)
+abline(v = 5, lty = "dashed")
+
+```
+
+It decided on 6. Let's see what variables it selected. 
+
+```{r model-rpart-final-model}
+
+printcp(modelTree)
+
+```
+
+It selected alcohol and free so2 and volatile acidity as the split variables.
+That's a bit surprising, but we are making big splits to the data, which are
+hard to see when viewing the variables two at a time. 
+
+```{r model-rpart-plot}
+
+# Extra 101 adds count n to the output.
+rpart.plot(modelTree, digits = 3, extra = 101, type =3)
+
+```
+
+Let's visualize the major tree splits. 
+Plot the left branch of the decision tree.
+
+```{r model-rpart-left}
+
+ggplot(aes(x = volatile, y = alcohol, color = quality.cat), data = treeTrain) + 
+  geom_point(alpha = 0.5, size = 1.5) +
+  coord_cartesian(ylim=c(8, 15)) +
+  geom_hline(yintercept=10.9) +
+  geom_vline(xintercept=0.238) +
+  geom_vline(xintercept=0.303) +
+  geom_quality_colors +  
+  ggtitle('Alcohol by volatile acidity and quality')
+
+```
+
+The first decision is to cover the area below the horizontal line as it has 
+poorer quality. The area to the left of the left vertical line has better 
+quality, then the area between the vertical lines, then the area to the right 
+of the right vertical line. 
+
+Now plot the right branch of the decision tree.
+
+```{r model-rpart-right}
+
+ggplot(aes(x = free.so2, y = alcohol, color = quality.cat), data = treeTrain) + 
+  geom_point(alpha = 0.5, size = 1.5) +
+  coord_cartesian(ylim=c(8, 15)) +
+  geom_hline(yintercept=11.7) +
+  geom_hline(yintercept=10.9) +
+  geom_vline(xintercept=11.5) +
+  geom_quality_colors +  
+  ggtitle('Alcohol by free so2 and quality')
+
+```
+
+The first decision is to cover the area above the lower horizontal line as it 
+has better quality. The area to the left of the  vertical line has poorer 
+quality, and for the area to the right of the vertical lines, quality is 
+better above the top horizontal line. 
+
+So we can track the decisions roughly on the graphics. 
+
+It was interesting that it made a decision based on free so2 and not total so2. 
+
+Let's see how this simple model performs. 
+First make a set of predictions with the test data.
+
+```{r model-rpart-predict}
+
+predictionsTree <- predict(modelTree, treeTest)
+
+```
+
+Let's look at the range of predictions, because the splits so far are 
+distinguishing good/bad areas around the middle. 
+Compare predictions to observations. First the predictions statistics:
+
+```{r model-rpart-fitted-values}
+
+summary(predictionsTree)
+
+```
+
+Then statistics for the observations being predicted (in the test set):
+
+```{r model-rpart-original-values}
+
+summary(treeTest$quality)
+
+```
+
+We are not predicting beyond categories 5 and 6. 
+
+```{r model-rpart-quality-value-counts}
+
+summary(treeTest$quality.cat)
+
+```
+3, 4, 8 and 9 may suffer from low samples, but we should at least reach 7.
+
+Calculate the RMSE metric from the observations and predictions.
+
+```{r model-rpart-rmse}
+
+RMSE(obs = treeTest$quality, pred = predictionsTree)
+
+```
+
+On average, the predictions are off by ca. 0.75, which might seem quite 
+good but the majority of predictions are distinguishing 5 from 6 from 7. 
+
+Let's try tuning the model using the rpart method in caret. We'll 
+do 10-fold cross-validations for 3 repeats. Instead of tuning over the 
+default 3 values of Cp, we'll do 30. 
+
+```{r model-rpart-caret, echo=FALSE, messages=FALSE, warning=FALSE}
+
+trCtrl = trainControl(method = "repeatedcv", repeats = 3)
+
+modelRpartCaret <- train(formula_continuous, data = treeTrain, 
+                    method = "rpart", 
+                    tuneLength = 30, 
+                    trControl = trCtrl)
+print(modelRpartCaret)
+
+```
+
+Optimal RSME was about 0.75, in line with the rpart package predictions. 
+
+Visualize the model. 
+
+```{r model-rpart-caret-final-plot, fig.width=14}
+
+rpart.plot(modelRpartCaret$finalModel, digits = 3, type = 3 )
+
+```
+
+Splits at the higher level are very similar to the rpart model. 
+Again, major decision points are with alcohol, volatile acidity and free so2.
+
+Plot the importance of the variables as determined by the model. 
+
+```{r model-rpart-caret-important-variables}
+
+plot(varImp(modelRpartCaret))
+
+```
+
+Chlorides ranks second on importance but only appears once on the tree and
+only very low down. Volatile is also ranked lower than expected. Obviously
+variables used for splits and importance do not need to line up. I need to
+research that later. 
+
+Would a simple linear regression model do better?
+
+```{r model-linear}
+
+trCtrl = trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+modelLM <- train(formula_continuous, data = treeTrain, 
+                     method = "lm", 
+                     metric = "RMSE",
+                     trControl = trCtrl)
+print(modelLM)
+
+```
+
+No practically significant difference from the rpart model.
+
+What does this model think are important variables?
+
+```{r model-linear-variable-importance, fig.cap="Linear model variable importance"}
+
+plot(varImp(modelLM))
+
+```
+
+Again a surprise as total so2 virtually disappears and alcohol is pushed right 
+down the list.
+
+I ran the lm without any preprocessing. But lm often runs better with 
+standardized variables (subtract mean from each value and divide by the 
+standard deviation). So run the same model with standardization.
+
+```{r model-linear-preprocess}
+
+trCtrl = trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+modelLMstd <- train(formula_continuous, data = treeTrain,
+                     method = "lm", 
+                     metric = "RMSE",
+                     preProcess = c("center", "scale"),
+                     trControl = trCtrl)
+print(modelLMstd)
+
+```
+
+No practically significant difference from the preprocessing. 
+
+Since it is linear regression, we may have an issue with multicollinearity. 
+Run a check. It's usual to take out columns that correlate over a cutoff 
+of 0.70. 
+
+```{r model-linear-correlation-matrix}
+
+corMat <-cor(treeTrain[1:11])
+highCor <- findCorrelation(corMat, cutoff=.70, names = TRUE)
+sprintf("Predictors over 0.70 correlation cutoff: %s", highCor)
+
+```
+
+In this case that is density, which we already know correlates strongly with 
+alcohol. Run the model again without density. Set up the new formula.  
+
+```{r model-linear-reduced-formula}
+
+# Build a formula that excludes density.
+# For some reason, using the format "-density" did not have the desired effect.
+formula_reduced <- reformulate(c(colnames(ww[1:7]), 
+                                 colnames(ww[9:11])), colnames(ww[12]))
+formula_reduced
+
+```
+
+Now run the model.
+
+```{r model-linear-reduced}
+trCtrl = trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+modelLMstdRed <- train(formula_reduced, data = treeTrain, 
+                     method = "lm", 
+                     metric = "RMSE",
+                     preProcess = c("center", "scale"),
+                     trControl = trCtrl)
+print(modelLMstdRed)
+
+```
+
+No practically significant difference for the model performance. 
+
+Instead of choosing myself, add a Principal Component Analysis
+to the preprocessing. This will keep the components above a variance
+threshold (leave the default 0.95). The components will be selected
+to best capture 95% of the variance. (Density is back in).
+
+```{r model-linear-pca}
+
+trCtrl = trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+modelLMstdPca <- train(formula_continuous, data = treeTrain,
+                     method = "lm", 
+                     metric = "RMSE",
+                     preProcess = c("center", "scale", "pca"),
+                     trControl = trCtrl)
+print(modelLMstdPca)
+
+```
+
+Again no practically significant improvement. The pca kept in all 11 
+components. So it sees no unnecessary explanatory variables. 
+
+Going back to the model without density, look at the variable importance.
+
+```{r model-linear-reduced-variable-importance, fig.cap="Reduced standardized linear model variable importance"}
+
+plot(varImp(modelLMstdRed))
+
+```
+
+Now look at what the recursive partitioning in caret determined.
+
+```{r model-tune-variable-importance, fig.cap="Recursive partitioning model variable importance"}
+
+plot(varImp(modelRpartCaret))
+
+```
+
+The variable importance in the linear model is now closer to what the 
+partitioning determined. 
+
+Now alcohol is back on the top of the lm list.
+The rest is still quite mixed and it is unclear why important variables in the 
+tree model did not appear high in the tree decision hierarchy. 
+
+Neither model is particularly good. There are a number of other models and 
+optimizations that could be attempted. 
+
+So let's try a Support Vector Machine (SVM) model in caret. We'll start by
+predicting the quality categories, so we switch to accuracy as a metric. 
+TuneLength of 9 is typical, fitting 9 values in the default grid of cost 
+parameters. 
+
+```{r model-svm-linear}
+
+trCtrl = trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+modelSVMlin <- train(formula_category, data = treeTrain, 
+                     method = "svmLinear", 
+                     metric = "Accuracy",
+                     preProcess = c("center", "scale"),
+                     TuneLength = 9,
+                     trControl = trCtrl)
+print(modelSVMlin)
+
+```
+
+Accuracy is poor. We can look at the confusion matrix to see what it means. 
+
+```{r model-svm-linear-confusion}
+
+predictionsSVMlin <- predict(modelSVMlin, treeTest)
+confusionMatrix(predictionsSVMlin, treeTest$quality.cat)
+
+```
+
+As we saw with the simple tree model, predictions are limited to 
+categories 5 and 6 and don't extend into the other categories. That's why the 
+accuracy is so low. 
+
+```{r model-svm-linear-variable-importance, fig.cap = "SVM linear model variable importance"}
+
+plot(varImp(modelSVMlin))
+
+```
+
+Here the variable importance is given for each quality category (so X7 means
+quality category 7). The importance of chlorides is seen for category 7. 
+Alcohol and free so2 are prominent across most categories. 
+
+We can try non-linear "radial" basis functions. This will attempt to fit
+non-linear relations. There are many variables that do not hold a linear
+relationship across all categories. 
+
+```{r model-svm-non-linear}
+
+trCtrl = trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+modelSVMrad <- train(formula_category, data = treeTrain, 
+                     method = "svmRadial", 
+                     metric = "Accuracy",
+                     preProcess = c("center", "scale"),
+                     TuneLength = 9,
+                     trControl = trCtrl)
+print(modelSVMrad)
+
+```
+
+The accuracy seems higher. Let's see how that impacts the confusion matrix. 
+
+```{r model-svm-non-linear-confusion}
+
+predictionsSVMrad <- predict(modelSVMrad, treeTest)
+confusionMatrix(predictionsSVMrad, treeTest$quality.cat)
+
+```
+
+The non-linear SVM model was better than the linear model. You can see from 
+the confusion matrix that it starts to form a more diagonal pattern, with the 
+inclusion of predictions for category 7. 
+
+Generate the variable importance. 
+
+```{r model-svm-non-linear-variable-importance, fig.cap = "SVM non-linear model variable importance"}
+
+plot(varImp(modelSVMrad))
+
+```
+
+OK, that looks the same as for the previous linear model, which suggests the
+method for calculating the importance is independent of the model method. 
+
+Finally, to compare with the other models, let's run the non-linear SVM on the 
+quality column - not as categories but as a continuous variable. We can obtain 
+the RMSE value and compare to the other models. 
+
+```{r model-svm-non-linear-rmse}
+
+trCtrl = trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+modelSVMradQ <- train(formula_continuous, data = treeTrain, 
+                     method = "svmRadial", 
+                     metric = "RMSE",
+                     preProcess = c("center", "scale"),
+                     TuneLength = 9,
+                     trControl = trCtrl)
+print(modelSVMradQ)
+
+```
+
+Generate a summary to look at the range of the predicted values, which was
+an issue with the early rpart models.
+
+```{r model-svm-non-linear-rsme-summary}
+
+predictionsSVMradQ <- predict(modelSVMradQ, treeTest)
+summary(predictionsSVMradQ)
+
+```
+
+Whereas the first rpart model predictions did not extend beyond categories
+5 and 6, the new model is now extending into the quality categories 4 and 7. 
+
+Look at the variable importance.
+
+```{r model-svm-non-linear-rsme-variable-importance, fig.cap="Continuous SVM non-linear model variable importance"}
+
+plot(varImp(modelSVMradQ))
+
+```
+
+Now compare the 6 caret models we created for predicting the quality as a 
+continuous variable. 
+
+Models with continuous quality as target:
+
+RPTC rpart
+
+LM linear regression
+
+LMS linear regression standardized
+
+LMSR linear regression standardized reduced (no density)
+
+LMSP linear regression standardised principal component analysis
+
+SVRQ non-linear SVM (radial)
+
+```{r model-compare-continuous-summary}
+
+results_continuous <- resamples(list(RPT=modelRpartCaret, LM=modelLM, 
+                          LMS=modelLMstd, LMSR=modelLMstdRed, 
+                          LMSP=modelLMstdPca, SVRQ=modelSVMradQ))
+summary(results_continuous)
+
+```
+
+Looks like the SVM model was significantly better on all counts. 
+Visualize the values with confidence intervals. 
+
+```{r model-compare-continuous-dotplot, fig.cap = "Continuous model metric comparison"}
+
+dotplot(results_continuous)
+
+```
+
+No question that the SVM model is the best so far. 
+
+Finally, let's compare the 2 caret models we created for the quality as a 
+categorical variable. 
+
+Models with categorical quality as target:
+
+SVML linear SVM
+
+SVMR non-linear SVM (radial)
+
+```{r model-compare-categorical-summary}
+
+results_categorical <- resamples(list(SVML=modelSVMlin,SVMR=modelSVMrad))
+summary(results_categorical)
+
+```
+
+The non-linear model performs better than the linear model. 
+Visualize the values with confidence intervals. 
+
+```{r model-compare-categorical-dotplot, fig.cap = "Categorical model metric comparison"}
+
+dotplot(results_categorical)
+
+```
+
+Again we see visually that for the categorical models, the non-linear model 
+performs better than the linear model. 
+
+# Multivariate Analysis
+
+### Relationships observed and features that strengthened each other
+
+Changes in density seem to be mainly driven by changes in alcohol levels rather
+than changes in residual sugar levels. We see the relationship between alcohol 
+and residual sugar gradually decreasing as the density increases. So sugar 
+doesn't affect density as much as alcohol.
+
+There was a tendency for lower total so2 and lower fixed acidity to relate to 
+higher quality. 
+
+Low chlorides (experienced as saltiness) relate to higher quality. 
+
+### Interesting or surprising interactions between features
+
+Poor quality is common for all residual sugar levels if the alcohol is low 
+enough. We don't see high alcohol and high residual sugar combinations. 
+
+So there are 'dry' wines with low residual sugar AND low alcohol. 
+So either the alcohol or the residual sugar was removed from the wine, 
+perhaps? Either way, these combinations are rated poorly, so why would one 
+make that effort? Or the fermentation quickly ran out of sugar and stopped. 
+Perhaps this is a consequence of trying to create a dry wine by starting with 
+less sugar and overdoing it. The wine doesn't ferment enough alcohol to get a 
+better rating. 
+
+Moderately sweet wines can get a good rating if there is enough alcohol.
+There are a few good wines with low alcohol and moderate residual sugar, 
+but these are the exception. In general, better ratings correspond to more 
+alcohol content. 
+
+### Models created and their strengths and limitations
+
+I started with a simple rpart partitioning model and then looked at 
+improving this via models using the caret package. In addition to a new
+cross-validated rpart model, I looked at linear models with standardized
+variables and with a high correlating variable (density) removed.
+
+The caret rpart model (RMSE 0.75, MAE 0.59) was slightly better than
+the best linear model (RMSE 0.77, MAE 0.60).
+
+I then generated Support Vector Machine models in two forms: a categorical
+prediction and a continuous variable prediction. For the categorical 
+prediction I tried a linear and a non-linear model. 
+
+The SVM using continuous variable performed better than the rpart and 
+linear models. I achieved an RMSE of 0.71 and an MAE of 0.54.
+
+For the categorical prediction, the non-linear (radial) SVM performed better 
+than the linear SVM. 
+
+After the models were generated I compared the performance metrics of my models 
+with those of Cortez et al. in their paper.
+
+They ran SVM on quality as a continuous variable. They achieved an accuracy 
+(tolerance=0.5 to be compatible with my model) of 64.6 with SVM, 
+compared to my non-linear SVM of 58.6. Their Kappa was 43.9 compared to 
+my 32.0. They reported 0.45 MAE (they name it MAD) compared to my 0.54. 
+
+So their results were better.
+
+The paper states that the data comes from Vinho Verde, a Portugese wine. 
+According to the Wikipedia entry on Vinho Verde, "The white Vinho Verde is
+very fresh, due to its natural acidity, with fruity and floral aromas that 
+depend on the grape variety. The white wines are lemon- or straw-coloured, 
+around 8.5 to 11% alcohol, and are made from local grape varieties Loureiro, 
+Arinto, Trajadura, Avesso, and Azal. Vinho Alvarinho is made from Alvarinho 
+grapes, from a small designated subregion of Monção and Melgaço. 
+It has more alcohol (11.5 to 14%) and ripe tropical aromas."
+
+The distribution of Alcohol values might therefore be overlaying two 
+distributions, one for Vinho Verde "classic" with a range of 8.5% to 11% 
+and one for Vinho Alvarinho with a range of 11% to 14%. But this is 
+speculation and there is no data to distinguish these in the dataset. 
+
+------
+
+# Final Plots and Summary
+
+### Plot One
+
+```{r plot-one, fig.cap="Relationship between Alcohol, Residual Sugar and Quality in White Wine"}
+
+pt = paste("Alcohol by residual sugar and quality ",
+           "(quality scale 0-10, best rating is 10)")
+
+ggplot(aes(x = sugar, y = alcohol, color = quality.cat), data = ww) +
+  geom_point(alpha = 0.5, size = 1.5) +
+  coord_cartesian(xlim = c(0, 25), ylim=c(8, 15)) +
+  geom_smooth(method = "lm", color = "red") +
+  geom_quality_colors +
+  labs(x = "Residual Sugar (grams per liter)", y = "Alcohol (% by volume)", 
+       title = pt);
+```
+
+### Description One
+
+I was surprised to see so many data points at low levels of sugar and alcohol
+The quality was rated poorly for these combinations. Poor quality is common for 
+all residual sugar levels if the alcohol is low enough and there are very few 
+high alcohol and high residual sugar combinations. 
+
+So there are 'dry' wines with low residual sugar AND low alcohol. 
+So either the alcohol or the residual sugar was removed from the wine, perhaps?
+Either way, these combinations are rated poorly, so why would one make that 
+effort? Or the fermentation quickly ran out of sugar and stopped. Perhaps this 
+is a consequence of trying to create a dry wine by starting with less sugar 
+and overdoing it. The wine doesn't ferment enough alcohol to get a better 
+rating. 
+
+Moderately sweet wines can get a good rating if there is enough alcohol.
+There are a few good wines with low alcohol and moderate residual sugar, 
+but these are the exception. In general, better ratings correspond to more 
+alcohol content. 
+
+### Plot Two
+
+```{r plot-two, fig.cap="Recursive partitioning tree using 'rpart' package"}
+
+rpart.plot(modelTree, digits = 3, extra = 101, type =3)
+
+```
+
+### Description Two
+
+The first model made using the recursive partitioning package rpart showed the 
+importance of alcohol in that it determined the first split. The other 
+variables were somewhat more surprising because visual analysis of the 
+scatterplots seemed to show fixed acidity (rather than volatile acidity) 
+and total so2 (rather than free so2) would lead to a clearer partition. 
+Also, chlorides, which looked like a good candidate for partitioning did 
+not appear. 
+
+The reason is likely to be that the visual analysis sees both sides of the tree
+at once. If the left and right sides were to be split in the data into two sets
+and then visualized, they might then show the subsequent splits more clearly. 
+
+### Plot Three
+
+```{r plot-three, fig.cap="Most important variables from recursive partitioning in 'caret' package"}
+
+plot(varImp(modelRpartCaret))
+
+```
+
+### Description Three
+
+The rpart model in caret generated slightly better performance metrics than 
+the model from the rpart package. Looking at the the relative importance of 
+the variables, it was surprising to see that volatile acidity was much less 
+important in this model.
+
+The importance of the variables in recursive partitioning is estimated by 
+summing the reduction in the loss function attributed to each variable at each 
+split, including the top competing variables. Perhaps the reason for this 
+difference is that the caretmodel went a number of levels deeper which 
+influenced the cumulative loss reduction contribution. 
+
+An interesting aspect of this model is that chlorides become much more 
+important, which was a finding from the visual analysis. 
+
+The final surprise occurred when reading the variable importance in the 
+paper from Cohen et al. In their list. sulphates were the most important 
+variable, whereas in this model, and in the visual analyses, sulphates was 
+not considered important at all. 
+
+------
+
+# Reflection
+
+I was pleased with the way the plots worked out. Two of my three final plots
+were generated by packages and I couldn't find any way to customize them
+further. But I added captions. I used them because they were key results from 
+this analysis. 
+
+The mean_box helper function was supposed to be a time-saver but
+I had difficulties passing the arguments into the groupby and aesthetics and
+there is probably a more elegant way of doing that. I burnt more time than
+I saved, but I learned a lot. 
+
+I struggled with getting the right mixture of granularity and color for the
+multivariate plots. 
+
+I need to improve my knowledge of further optimizing models. 
+
+I did not achieve the model performance reported by Cohen et al. in their paper,
+but they conducted an exhaustive optimization of the hyperparameters and of
+the selected features, that I didn't have time for (and that would have made 
+this report much longer!). Future work could include such optimization and 
+models created with other packages than caret. 
+
+The random sampling method that I used left some categories with low sample 
+counts because I withheld 30% for a test set. But the caret package runs
+cross-validations to assess its model performance. So it might be possible to
+use the whole data to create models and see how caret assesses them. There
+would be no way to verify them so there is a risk of overfitting. 
+
+I have not used caret before and was surprised how quickly I could get to 
+useful models. I would like to better understand why there are so many 
+variations in the lists of important variables depending on the model. 
+E.g. Cohen et al. reported sulphates as their most important variable, which 
+never came up in my analysis. 
+
+It was helpful not to read ahead or research the topic in advance, as it did
+not bias my analysis. There have been a lot of analyses with this dataset. 
+Future work could include a meta-analysis of the work on this dataset to 
+identify gaps and new approaches. I did get some help from reference [5] 
+which had some example rpart package models with this same dataset. 
+
+Now I'm looking forward to a glass of wine...
+
+# References
+
+[1] <https://stackoverflow.com/questions/8317231/elegant-way-to-report-missing-values-in-a-data-frame>  
+
+[2] <http://www.justintools.com/unit-conversion/density.php?k1=milligrams-per-cubic-decimeter&k2=parts-per-million>  
+
+[3] <https://stackoverflow.com/questions/28427572/manipulating-axis-titles-in-ggpairs-ggally>  
+
+[4] <https://stats.stackexchange.com/questions/26920/variable-ordering-using-pca>  
+
+[5] Book: "Machine Learning with R" by Brett Lanz  ISBN 978-1-78216-214-8 
+
+[6] <https://stackoverflow.com/questions/38220963/how-to-pass-a-variable-name-in-group-b>  
+
+[7] <https://stackoverflow.com/questions/41783396/passing-arguments-to-dplyr-summarize-function>  
+
+
