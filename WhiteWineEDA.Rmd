@@ -1,7 +1,7 @@
 ---
 title: "Exploration of white wine quality data"
 author: "Alan Glasper"
-date: "March 10th 2019"
+date: "March 13th 2019"
 output:
    html_document:
       toc: true
@@ -100,7 +100,8 @@ if (!require(dplyr)) {
 }
 ```
 
-Loading the helper functions. Used references [6] and [7] in constructing these. 
+Loading the helper functions. Used references [6], [7] and [8] in 
+constructing these. 
 
 ```{r helper-functions}
 
@@ -122,13 +123,15 @@ quickhist <- function(ds, dscol) {
 # Set up a basic mean plot and box plot helper function.
 # Provides a first look at statistics of a value by category.
 
-mean_box <- function(ds, dsvcol, dsccol) {
+mean_box <- function(ds, dsvcol, dsccol, optional_ylim) {
   # Display a combined mean with 95% C.I. and box plot graphic
   # for a dataset where value and category columns are named.
   
   # (dataset) ds is a dataset
   # (string) dsvcol is the name of a continuous value column in the dataset
   # (String) dsccol is the name of a type category column in the dataset
+  # (float) optional_ylim is an optional vector defining the ylim limits
+  #   e.g. c(0,20)
   # returns the plot as a FacetGrid
   
  stats_table <- ds %>%
@@ -145,12 +148,62 @@ mean_box <- function(ds, dsvcol, dsccol) {
                  width=0.2, size=1, data=stats_table) +
    ylab(paste('mean',dsvcol,'with 95% C.I.'));
  
- fa2 <- ggplot(aes_string(x=dsccol, y=dsvcol), data=ds) +
-   geom_boxplot(color = 'black', fill = '#099DD9');
+ # Zoom in if a ylim argument has been provided. 
+  if(!missing(optional_ylim))
+   fa1 = fa1 + coord_cartesian(ylim = optional_ylim)
+ 
+ # Added jitter to points outside the boxes using reference [8].
+ # First define the actions to be made via lazyeval interp() function. 
+
+ mutate_action_high <- interp(~ v > (quantile(v, 0.75) + (1.5 * IQR(v))), 
+                              v = as.name(dsvcol))
+ mutate_action_low <- interp(~ v < (quantile(v, 0.25) - (1.5 * IQR(v))), 
+                             v = as.name(dsvcol))
+
+ # The actions are plugged into mutate_ (standard evaluation) with string 
+ # name of new column that contain the flags.
+  
+ ds_outliers <- ds %>%
+   group_by_(dsccol) %>%
+   mutate_(.dots = setNames(list(mutate_action_high), "outlier.high")) %>%
+   mutate_(.dots = setNames(list(mutate_action_low), "outlier.low")) %>%
+   ungroup
+ 
+ # If either flag is true, plot a point and apply jitter. 
+ # Note that the boxplot outliers are switched off first via shape = NA.
+ 
+ fa2 <- ggplot(aes_string(x=dsccol, y=dsvcol), data=ds_outliers) +
+   geom_boxplot(color = 'black', fill = '#099DD9', outlier.shape = NA) +
+   geom_jitter(data = function(x) 
+     dplyr::filter(x, outlier.high == TRUE | outlier.low == TRUE), width = 0.2)
+ 
+ # Zoom in if a ylim argument has been provided. 
+ if(!missing(optional_ylim))
+   fa2 = fa2 + coord_cartesian(ylim = optional_ylim)
  
  grid.arrange(fa1, fa2, ncol=2);
 }
 
+# Display a table by category of mean and median values.
+
+quickstats <- function(ds, dsvcol, dsccol) {
+  # Display mean with 95% confidence intervals and the median of a 
+  # continuous variable by a category for a dataset where value and 
+  # category columns are named.
+  
+  # (dataset) ds is a dataset
+  # (string) dsvcol is the name of a continuous value column in the dataset
+  # (String) dsccol is the name of a type category column in the dataset
+  # prints a table with the statistics
+  
+ stats_table <- ds %>%
+   group_by_(.dots=dsccol) %>%
+   dplyr::summarize_(mean = interp(~ mean(var), var = as.name(dsvcol)),
+                    upper_ci = interp(~ CI(var)[1], var = as.name(dsvcol)),
+                    lower_ci = interp(~ CI(var)[3], var = as.name(dsvcol)),
+                    median = interp(~ median(var), var = as.name(dsvcol)))
+ print(stats_table)
+}
 
 # Display a quick scatterplot.
 
@@ -231,6 +284,7 @@ Loading the data and looking at the structure.
 
 ```{r load-the-data}
 
+# Read in the source file into data frame and display information about it.
 ww <- read.csv('wineQualityWhites.csv')
 
 str(ww)
@@ -241,6 +295,7 @@ Calculate statistics for each variable.
 
 ```{r statistics-per-variable}
 
+#Display summary statistics for the whole data frame.
 summary(ww)
 
 ```
@@ -253,6 +308,7 @@ The X column can be dropped.
 
 ```{r drop-the-index-column}
 
+# Remove the X column from the data frame. 
 ww <- subset(ww, select = -X)
 
 ```
@@ -263,6 +319,7 @@ quality column that is ordered category.
 
 ```{r create-quality-as-factors}
 
+# Create a new column from the quality column as a categorical variable.
 ww$quality.cat <- as.factor(ww$quality)
 
 ```
@@ -273,6 +330,7 @@ Check how many rows that is. If not too many, take a look at them.
 
 ```{r check-citric-zero-values}
 
+# Select citric values that are zero and display them.
 zeroCitric <- subset(ww, citric.acid == 0)
 zeroCitric
 ```
@@ -291,10 +349,10 @@ Need to check whether there are any missing values.
 
 # Check for missing values and deal with them.
 # Used an idea from reference [1] (see final section).
-
 sapply(ww, function(x) sum(is.na(x)))
 
 ```
+
 Nothing missing, so on with the plotting. 
 
 
@@ -304,6 +362,7 @@ To get a feel for the values, create a view of the first rows.
 
 ```{r overview-of-first-rows}
 
+# Display the top rows in the data frame.
 head(ww)
 
 ```
@@ -318,11 +377,22 @@ readily).
 
 ```{r uni-fixed, echo=FALSE, messages=FALSE, warning=FALSE}
 
+# Create 2 histograms, one a general overview and the other zoomed in 
+# to highlight the main part of the distribution and granularity of data. 
 q1 <- quickhist(ww, ww$fixed.acidity)
 q2 <- ggplot(aes(x = fixed.acidity), data = ww) +
   geom_histogram(binwidth = 0.01, color = 'black', fill = '#099DD9') +
   scale_x_continuous(limits = c(5, 9), breaks = seq(5, 9, 0.2))
-grid.arrange(q1, q2, ncol=1)
+grid.arrange(q1, q2, ncol=1);
+
+```
+
+View a summary of the statistics.
+
+```{r uni-fixed-summary}
+
+# Display summary statistics. 
+summary(ww$fixed.acidity)
 
 ```
 
@@ -330,6 +400,7 @@ The tiny spikes in between the values at 0.1 granularity indicate some values ha
 
 ```{r uni-fixed-table}
 
+# Display a table of value counts to view the granularity. 
 table(ww$fixed.acidity)
 
 ```
@@ -348,6 +419,8 @@ unpleasant, vinegar taste. But we don't know what "too high" is.
 
 ```{r uni-volatile, echo=FALSE, messages=FALSE, warning=FALSE}
 
+# Create 2 histograms, one a general overview and the other zoomed in 
+# to highlight the main part of the distribution and granularity of data. 
 q1 <- quickhist(ww, ww$volatile.acidity)
 q2 <- ggplot(aes(x = volatile.acidity), data = ww) +
   geom_histogram(binwidth = 0.001, color = 'black', fill = '#099DD9') +
@@ -356,7 +429,14 @@ grid.arrange(q1, q2, ncol=1)
 
 ```
 
-Only a slight skew to the right. 
+Only a slight skew to the right. View a summary of the statistics.
+
+```{r uni-volatile-summary}
+
+# Display summary statistics. 
+summary(ww$volatile.acidity)
+
+```
 
 Another possibility is to examine the ratio of fixed to volatile acidity. 
 
@@ -365,6 +445,8 @@ Found in small quantities, citric acid can add 'freshness' and flavor to wines.
 
 ```{r uni-citric, echo=FALSE, messages=FALSE, warning=FALSE}
 
+# Create 2 histograms, one a general overview and the other zoomed in 
+# to highlight the main part of the distribution and granularity of data. 
 q1 <- quickhist(ww, ww$citric.acid)
 q2 <- ggplot(aes(x = citric.acid), data = ww) +
   geom_histogram(binwidth = 0.0001, color = 'black', fill = '#099DD9') +
@@ -373,11 +455,21 @@ grid.arrange(q1, q2, ncol=1)
 
 ```
 
+View a summary of the statistics.
+
+```{r uni-citric-summary}
+
+# Display summary statistics. 
+summary(ww$citric.acid)
+
+```
+
 It seems that there is a much larger number of one value than its position in
 the distribution would expect. Again, let's look at the values.
 
 ```{r uni-citric-table}
 
+# Display a table of value counts to view the granularity. 
 table(ww$citric.acid)
 
 ```
@@ -388,8 +480,11 @@ distribution of the other variables.
 
 ```{r uni-citric-spike}
 
+# Select citric values that are equal to 0.49 and display summary statistics 
+# and share of data set for them. "quickratio" is a helper function. 
 spikeCitric <- subset(ww, citric.acid == 0.49)
 summary(spikeCitric)
+quickratio(nrow(spikeCitric), nrow(ww))
 
 ```
 
@@ -404,6 +499,8 @@ same as grams per liter. How many sweet wines are there by this definition?
 
 ```{r uni-sugar-sweet}
 
+# Select residual sugar values that are greater than 45 and display summary 
+# statistics for them.
 sweetWines <- subset(ww, residual.sugar > 45)
 sweetWines
 
@@ -420,6 +517,9 @@ sweet > 45g/l
 
 ```{r uni-sugar, echo=FALSE, messages=FALSE, warning=FALSE}
 
+# Create 3 histograms, one a general overview, the second zoomed in 
+# to highlight the main part of the distribution and granularity of data,
+# and a third zoomed in again on the granularity. 
 q1 <- quickhist(ww, ww$residual.sugar)
 q2 <- ggplot(aes(x = residual.sugar), data = ww) +
   geom_histogram(binwidth = 0.01, color = 'black', fill = '#099DD9') +
@@ -428,6 +528,15 @@ q3 <- ggplot(aes(x = residual.sugar), data = ww) +
   geom_histogram(binwidth = 0.001, color = 'black', fill = '#099DD9') +
   scale_x_continuous(limits = c(0.5, 2.5), breaks = seq(0.5, 2.5, 0.1))
 grid.arrange(q1, q2, q3, ncol=1)
+
+```
+
+View a summary of the statistics.
+
+```{r uni-sugar-summary}
+
+# Display summary statistics. 
+summary(ww$residual.sugar)
 
 ```
 
@@ -442,7 +551,10 @@ It is rare to find wines with less than 1. How many of those are there?
 
 ```{r uni-sugar-rare-residuals}
 
+# Select residual sugar values that are less than 1 and display summary 
+# statistics and share of data set for them. 
 rareResiduals <- subset(ww, residual.sugar < 1)
+summary(rareResiduals)
 quickratio(nrow(rareResiduals), nrow(ww))
 
 ```
@@ -460,11 +572,22 @@ The amount of salt in the wine.
 
 ```{r uni-chlorides, echo=FALSE, messages=FALSE, warning=FALSE}
 
+# Create 2 histograms, one a general overview and the other zoomed in 
+# to highlight the main part of the distribution and granularity of data. 
 q1 <- quickhist(ww, ww$chlorides)
 q2 <- ggplot(aes(x = chlorides), data = ww) +
   geom_histogram(binwidth = 0.00001, color = 'black', fill = '#099DD9') +
   scale_x_continuous(limits = c(0.01, 0.07), breaks = seq(0.01, 0.07, 0.005))
 grid.arrange(q1, q2, ncol=1)
+
+```
+
+View a summary of the statistics.
+
+```{r uni-chlorides-summary}
+
+# Display summary statistics. 
+summary(ww$chlorides)
 
 ```
 
@@ -479,11 +602,22 @@ and taste of wine.
 
 ```{r uni-free-so2, echo=FALSE, messages=FALSE, warning=FALSE}
 
+# Create 2 histograms, one a general overview and the other zoomed in 
+# to highlight the main part of the distribution and granularity of data. 
 q1 <- quickhist(ww, ww$free.sulfur.dioxide)
 q2 <- ggplot(aes(x = free.sulfur.dioxide), data = ww) +
   geom_histogram(binwidth = 0.01, color = 'black', fill = '#099DD9') +
   scale_x_continuous(limits = c(0, 90), breaks = seq(0, 90, 5))
 grid.arrange(q1, q2, ncol=1)
+
+```
+
+View a summary of the statistics.
+
+```{r uni-free-so2-summary}
+
+# Display summary statistics. 
+summary(ww$free.sulfur.dioxide)
 
 ```
 
@@ -500,6 +634,8 @@ In relation to the base unit of density (kilograms per cubic meter):
 
 ```{r uni-free-so2-high}
 
+# Select free so2 values that are greater than 50 and display summary 
+# statistics and share of data set for them.
 nosyWines <- subset(ww, free.sulfur.dioxide > 50)
 summary(nosyWines)
 quickratio(nrow(nosyWines), nrow(ww))
@@ -513,6 +649,8 @@ rest.
 
 ```{r uni-free-so2-low}
 
+# Select free so2 values that are lower than or equal to 50 and display mean 
+# values for that subset and the subset higher than 50 created above. 
 nonNosyWines <- subset(ww, free.sulfur.dioxide <= 50)
 cat('Up to 50 has mean:', mean(nonNosyWines$quality),
     'Above 50 has mean:', mean(nosyWines$quality))
@@ -529,11 +667,22 @@ Amount of free and bound forms of SO2.
 
 ```{r uni-total-so2, echo=FALSE, messages=FALSE, warning=FALSE}
 
+# Create 2 histograms, one a general overview and the other zoomed in 
+# to highlight the main part of the distribution and granularity of data. 
 q1 <- quickhist(ww, ww$total.sulfur.dioxide)
 q2 <- ggplot(aes(x = total.sulfur.dioxide), data = ww) +
   geom_histogram(binwidth = 0.01, color = 'black', fill = '#099DD9') +
   scale_x_continuous(limits = c(0, 250), breaks = seq(0, 250, 10))
 grid.arrange(q1, q2, ncol=1)
+
+```
+
+View a summary of the statistics.
+
+```{r uni-total-so2-summary}
+
+# Display summary statistics. 
+summary(ww$total.sulfur.dioxide)
 
 ```
 
@@ -546,13 +695,25 @@ Bound Sulfur Dioxide = Total Sulfur Dioxide - Free Sulfur Dioxide.
 
 ```{r uni-bound-so2, echo=FALSE, messages=FALSE, warning=FALSE}
 
+# Remove the bound so2 column from the data set.
 ww$bound.sulfur.dioxide = ww$total.sulfur.dioxide - ww$free.sulfur.dioxide
 
+# Create 2 histograms, one a general overview and the other zoomed in 
+# to highlight the main part of the distribution and granularity of data. 
 q1 <- quickhist(ww, ww$bound.sulfur.dioxide)
 q2 <- ggplot(aes(x = bound.sulfur.dioxide), data = ww) +
   geom_histogram(binwidth = 0.01, color = 'black', fill = '#099DD9') +
   scale_x_continuous(limits = c(0, 250), breaks = seq(0, 250, 10))
 grid.arrange(q1, q2, ncol=1)
+
+```
+
+View a summary of the statistics.
+
+```{r uni-bound-so2-summary}
+
+# Display summary statistics. 
+summary(ww$bound.sulfur.dioxide)
 
 ```
 
@@ -566,6 +727,9 @@ alcohol and sugar content.
 
 ```{r uni-density, echo=FALSE, messages=FALSE, warning=FALSE}
 
+# Create 3 histograms, one a general overview, the second zoomed in 
+# to highlight the main part of the distribution and granularity of data,
+# and a third zoomed in again on the granularity. 
 q1 <- quickhist(ww, ww$density)
 q2 <- ggplot(aes(x = density), data = ww) +
   geom_histogram(binwidth = 0.000001, color = 'black', fill = '#099DD9') +
@@ -579,6 +743,15 @@ grid.arrange(q1, q2, q3, ncol=1)
 
 ```
 
+View a summary of the statistics.
+
+```{r uni-density-summary}
+
+# Display summary statistics. 
+summary(ww$density)
+
+```
+
 Again, there are some values that were probably already rounded and so occur
 more frequently. 
 
@@ -588,11 +761,22 @@ Describes how acidic or basic a wine is on a scale from 0 (very acidic) to 14
 
 ```{r uni-pH, echo=FALSE, messages=FALSE, warning=FALSE}
 
+# Create 2 histograms, one a general overview and the other zoomed in 
+# to highlight the main part of the distribution and granularity of data. 
 q1 <- quickhist(ww, ww$pH)
 q2 <- ggplot(aes(x = pH), data = ww) +
   geom_histogram(binwidth = 0.0001, color = 'black', fill = '#099DD9') +
   scale_x_continuous(limits = c(2.7, 3.8), breaks = seq(2.7, 3.8, 0.1))
 grid.arrange(q1, q2, ncol=1)
+
+```
+
+View a summary of the statistics.
+
+```{r uni-pH-summary}
+
+# Display summary statistics. 
+summary(ww$pH)
 
 ```
 
@@ -606,11 +790,22 @@ which acts as an antimicrobial and antioxidant.
 
 ```{r uni-sulphates, echo=FALSE, messages=FALSE, warning=FALSE}
 
+# Create 2 histograms, one a general overview and the other zoomed in 
+# to highlight the main part of the distribution and granularity of data. 
 q1 <- quickhist(ww, ww$sulphates)
 q2 <- ggplot(aes(x = sulphates), data = ww) +
   geom_histogram(binwidth = 0.0001, color = 'black', fill = '#099DD9') +
   scale_x_continuous(limits = c(0.2, 0.8), breaks = seq(0.2, 0.8, 0.1))
 grid.arrange(q1, q2, ncol=1)
+
+```
+
+View a summary of the statistics.
+
+```{r uni-sulphates-summary}
+
+# Display summary statistics. 
+summary(ww$sulphates)
 
 ```
 
@@ -624,11 +819,22 @@ The percent alcohol content of the wine. Wine tends to be between 9 and 16%.
 
 ```{r uni-alcohol, echo=FALSE, messages=FALSE, warning=FALSE}
 
+# Create 2 histograms, one a general overview and the other with a smaller bin 
+# width to highlight the granularity of data. 
 q1 <- quickhist(ww, ww$alcohol)
 q2 <- ggplot(aes(x = alcohol), data = ww) +
   geom_histogram(binwidth = 0.001, color = 'black', fill = '#099DD9') +
   scale_x_continuous(breaks = seq(8, 14, 0.5))
 grid.arrange(q1, q2, ncol=1)
+
+```
+
+View a summary of the statistics.
+
+```{r uni-alcohol-summary}
+
+# Display summary statistics. 
+summary(ww$alcohol)
 
 ```
 
@@ -651,22 +857,29 @@ The subjective rated quality of the wine.
 The quality rating is the median of three independent ratings on a 
 scale of 0 to 10.
 
-```{r uni-quality, echo=FALSE, messages=FALSE, warning=FALSE}
-
-q1 <- quickhist(ww, ww$quality)
-q2 <- ggplot(aes(x = quality), data = ww) +
-  geom_histogram(binwidth = 0.001, color = 'black', fill = '#099DD9') +
-  scale_x_continuous(breaks = seq(1, 10, 1))
-
-grid.arrange(q1, q2, ncol=1)
-
-```
-
-Confirms that the ratings are whole integers. 
+Confirm that the ratings are whole integers.
 
 ```{r uni-quality-summary}
 
+# Display summary statistics and a table of value counts to view the 
+# frequencies. 
 summary(ww$quality)
+table(ww$quality)
+
+```
+
+Looking at the frequency of each category there are only 5 wines behind the 
+9 rating and 20 behind the 3 rating. Those are small sample sizes. 
+
+Visualize those frequencies in a bar chart. 
+
+```{r uni-quality, echo=FALSE, messages=FALSE, warning=FALSE}
+
+# Create a bar chart with frequencies of the quality variable.
+# Set the bar width to 1 so no gaps are displayed between bars. 
+ggplot(aes(x = quality), data = ww) +
+  geom_bar(width = 1, color = 'black', fill = '#099DD9') +
+  scale_x_continuous(breaks = seq(1, 10, 1));
 
 ```
 
@@ -679,14 +892,6 @@ quality levels, which will help find relationships between quality and the
 other variables. The mode (and median) is 6, so slightly in favour of better 
 wines, but no issue.
 
-```{r uni-quality-value-counts}
-
-table(ww$quality)
-
-```
-
-Looking at the frequency of each category there are only 5 wines behind the 
-9 rating and 20 behind the 3 rating. Those are small sample sizes. 
 
 # Univariate Analysis
 
@@ -752,6 +957,7 @@ For the rest of the analysis, shorten the column names. They are:
 
 ```{r bi-colnames-ww}
 
+# Display the current column names.  
 colnames(ww)
 
 ```
@@ -760,8 +966,7 @@ to be shortened to:
 
 ```{r bi-shorten-colnames}
 
-# For convenience, shorten the sulfur dioxide column names
-
+# For convenience, shorten the sulfur dioxide column names and display them.
 colnames(ww)[1] <- "fixed"
 colnames(ww)[2] <- "volatile"
 colnames(ww)[3] <- "citric"
@@ -779,11 +984,21 @@ Lets's look in detail at each relationship with quality.
 The following relationships are interesting: 
 quality.cat and each of the explanatory variables.
 
+For each variable, look at the mean and distribution via a box plot,
+and if necessary, zoom in. Also look at summary statistics. 
+
 ## Alcohol
 
 ```{r bi-quality-alcohol}
 
+# Uses a helper function to display mean and box plots together. 
 mean_box(ww, "alcohol", "quality.cat")
+
+```
+```{r bi-quality-alcohol-stats}
+
+# Uses a helper function to display mean with confidence limits and median.
+quickstats(ww, "alcohol", "quality.cat")
 
 ```
 
@@ -796,8 +1011,14 @@ average.
 
 ```{r bi-quality-sulphates}
 
+# Uses a helper function to display mean and box plots together. 
 mean_box(ww, "sulphates", "quality.cat")
 
+```
+```{r bi-quality-sulphates-stats}
+
+# Uses a helper function to display mean with confidence limits and median.
+quickstats(ww, "sulphates", "quality.cat")
 
 ```
 
@@ -808,9 +1029,17 @@ otherwise uncertain.
 
 ```{r bi-quality-ph}
 
+# Uses a helper function to display mean and box plots together. 
 mean_box(ww, "pH", "quality.cat")
 
 ```
+```{r bi-quality-ph-stats}
+
+# Uses a helper function to display mean with confidence limits and median.
+quickstats(ww, "pH", "quality.cat")
+
+```
+
 
 A linear relationship from 5 to 7, uncertain with other categories.  
 
@@ -818,7 +1047,14 @@ A linear relationship from 5 to 7, uncertain with other categories.
 
 ```{r bi-quality-density}
 
+# Uses a helper function to display mean and box plots together. 
 mean_box(ww, "density", "quality.cat")
+
+```
+```{r bi-quality-density-stats}
+
+# Uses a helper function to display mean with confidence limits and median.
+quickstats(ww, "density", "quality.cat")
 
 ```
 
@@ -826,9 +1062,9 @@ Zoom in on the box plot.
 
 ```{r bi-quality-density-zoom}
 
-ggplot(aes(x = quality.cat, y = density), data = ww) +
-  geom_boxplot(color = 'black', fill = '#099DD9') + 
-  coord_cartesian(ylim = (xlim = c(0.99, 1.005)));
+# Uses a helper function to display mean and box plots together.
+# The third optional argument defines the y-axis limits as a vector.
+mean_box(ww, "density", "quality.cat", c(0.99, 1.005))
 
 ```
 
@@ -839,7 +1075,14 @@ category 4.
 
 ```{r bi-quality-free-so2}
 
+# Uses a helper function to display mean and box plots together. 
 mean_box(ww, "free.so2", "quality.cat")
+
+```
+```{r bi-quality-free-so2-stats}
+
+# Uses a helper function to display mean with confidence limits and median.
+quickstats(ww, "free.so2", "quality.cat")
 
 ```
 
@@ -847,9 +1090,9 @@ Zoom in on the box plot.
 
 ```{r bi-quality-free-so2-zoom}
 
-ggplot(aes(x = quality.cat, y = free.so2), data = ww) +
-  geom_boxplot(color = 'black', fill = '#099DD9') + 
-  coord_cartesian(ylim = (xlim = c(0, 100)));
+# Uses a helper function to display mean and box plots together.
+# The third optional argument defines the y-axis limits as a vector.
+mean_box(ww, "free.so2", "quality.cat", c(0, 100))
 
 ```
 
@@ -861,7 +1104,14 @@ detectable.
 
 ```{r bi-quality-bound-so2}
 
+# Uses a helper function to display mean and box plots together. 
 mean_box(ww, "bound.so2", "quality.cat")
+
+```
+```{r bi-quality-bound-so2-stats}
+
+# Uses a helper function to display mean with confidence limits and median.
+quickstats(ww, "bound.so2", "quality.cat")
 
 ```
 
@@ -872,7 +1122,14 @@ linear relationship.
 
 ```{r bi-quality-total-so2}
 
+# Uses a helper function to display mean and box plots together. 
 mean_box(ww, "total.so2", "quality.cat")
+
+```
+```{r bi-quality-total-so2-stats}
+
+# Uses a helper function to display mean with confidence limits and median.
+quickstats(ww, "total.so2", "quality.cat")
 
 ```
 
@@ -884,7 +1141,14 @@ and bound look similar and are highly correlated.
 
 ```{r bi-quality-chlorides}
 
+# Uses a helper function to display mean and box plots together. 
 mean_box(ww, "chlorides", "quality.cat")
+
+```
+```{r bi-quality-chlorides-stats}
+
+# Uses a helper function to display mean with confidence limits and median.
+quickstats(ww, "chlorides", "quality.cat")
 
 ```
 
@@ -892,9 +1156,9 @@ Zoom in on the box plot.
 
 ```{r bi-quality-chlorides-zoom}
 
-ggplot(aes(x = quality.cat, y = chlorides), data = ww) +
-  geom_boxplot(color = 'black', fill = '#099DD9') + 
-  coord_cartesian(ylim = (xlim = c(0, 0.1)));
+# Uses a helper function to display mean and box plots together.
+# The third optional argument defines the y-axis limits as a vector.
+mean_box(ww, "chlorides", "quality.cat", c(0, 0.1))
 
 ```
 
@@ -904,7 +1168,14 @@ Chlorides show a clear linear relationship with quality.
 
 ```{r bi-quality-sugar}
 
+# Uses a helper function to display mean and box plots together. 
 mean_box(ww, "sugar", "quality.cat")
+
+```
+```{r bi-quality-sugar-stats}
+
+# Uses a helper function to display mean with confidence limits and median.
+quickstats(ww, "sugar", "quality.cat")
 
 ```
 
@@ -912,9 +1183,9 @@ Zoom in on the box plot.
 
 ```{r bi-quality-sugar-zoom}
 
-ggplot(aes(x = quality.cat, y = sugar), data = ww) +
-  geom_boxplot(color = 'black', fill = '#099DD9') + 
-  coord_cartesian(ylim = (xlim = c(0, 25)));
+# Uses a helper function to display mean and box plots together.
+# The third optional argument defines the y-axis limits as a vector.
+mean_box(ww, "sugar", "quality.cat", c(0, 25))
 
 ```
 
@@ -925,7 +1196,14 @@ some extent 8.
 
 ```{r bi-quality-citric}
 
+# Uses a helper function to display mean and box plots together. 
 mean_box(ww, "citric", "quality.cat")
+
+```
+```{r bi-quality-citric-stats}
+
+# Uses a helper function to display mean with confidence limits and median.
+quickstats(ww, "citric", "quality.cat")
 
 ```
 
@@ -933,9 +1211,9 @@ Zoom in on the box plot.
 
 ```{r bi-quality-citric-zoom}
 
-ggplot(aes(x = quality.cat, y = citric), data = ww) +
-  geom_boxplot(color = 'black', fill = '#099DD9') + 
-  coord_cartesian(ylim = c(0, 0.7)) 
+# Uses a helper function to display mean and box plots together.
+# The third optional argument defines the y-axis limits as a vector.
+mean_box(ww, "citric", "quality.cat", c(0, 0.7))
 
 ```
 
@@ -945,7 +1223,14 @@ The differences between categories are minimal and 4 again is an exception.
 
 ```{r bi-quality-volatile}
 
+# Uses a helper function to display mean and box plots together. 
 mean_box(ww, "volatile", "quality.cat")
+
+```
+```{r bi-quality-volatile-stats}
+
+# Uses a helper function to display mean with confidence limits and median.
+quickstats(ww, "volatile", "quality.cat")
 
 ```
 
@@ -960,7 +1245,14 @@ quality. This might partition the results at around 0.26 volatile acidity.
 
 ```{r bi-quality-fixed}
 
+# Uses a helper function to display mean and box plots together. 
 mean_box(ww, "fixed", "quality.cat")
+
+```
+```{r bi-quality-fixed-stats}
+
+# Uses a helper function to display mean with confidence limits and median.
+quickstats(ww, "fixed", "quality.cat")
 
 ```
 
@@ -968,8 +1260,9 @@ This shows a clear linear relationship with quality.
 
 An overview of just the correlations would be helpful. Let's use corrgram. 
 
-```{r corrgram}
+```{r corrgram, fig.height=7, fig.width=7}
 
+# Setting height and width the same avoids distortion.
 # Order=TRUE enables ordering by principal components.
 corrgram(ww, order=TRUE, lower.panel=panel.shade,
   upper.panel=panel.pie, text.panel=panel.txt,
@@ -998,6 +1291,7 @@ to see whether using the bound variable would improve model results.
 
 ```{r remove-bound-so2}
 
+# Overwrite the data frame with a copy minus the bound so2 column.
 ww <- subset(ww, select= -bound.so2)
 
 ```
@@ -1006,6 +1300,7 @@ Check interesting relationships between the original explanatory variables.
 
 ```{r correlation-table}
 
+# Cor defaults to pearson correlation coefficients for all combinations.
 cor(ww[1:11])
 
 ```
@@ -1024,8 +1319,11 @@ for complete dataset):
 Since we now have a reasonable number of factors (6), let's use pairs in the 
 psych package to look at them.  
 
-```{r psych-pairs-key-variables}
+```{r psych-pairs-key-variables,  fig.height=7, fig.width=7}
 
+# Use stars=TRUE to indicate statistical significance (low p-values).
+# Showing the points is too dense and we have already looked at distributions
+# so set show.points to FALSE. 
 focusColumns = c("density", "sugar", "alcohol", "total.so2",  "pH", "fixed")
 psych::pairs.panels(ww[focusColumns], stars=TRUE, show.points=FALSE)
 
@@ -1043,6 +1341,11 @@ with a random 500 sample.
 
 ```{r sample-dataset}
 
+# Take a random sample of 500. 
+# The lower density of the sample helps see patterns in the scatterplots. 
+
+set.seed(42)
+
 ww_sample <- ww[sample(1:length(ww$quality), 500), ]
 
 ```
@@ -1051,6 +1354,7 @@ ww_sample <- ww[sample(1:length(ww$quality), 500), ]
 
 ```{r bi-density-sugar}
 
+# Display scatterplots of the full dataset and the sample together.
 g1 <- quickscatter(ww, "density", "sugar", "Full dataset")
 
 g2 <- quickscatter(ww_sample, "density", "sugar", "Sample from dataset")
@@ -1063,6 +1367,7 @@ There is a rather extreme outlier in the data.
 
 ```{r bi-density-sugar-outlier}
 
+# Filter out the outlier and display it.
 filter(ww, density > 1.02)
 
 ```
@@ -1081,6 +1386,7 @@ these to be more frequent.
 
 ```{r bi-alcohol-density}
 
+# Display scatterplots of the full dataset and the sample together.
 g1 <- quickscatter(ww, "alcohol", "density", "Full dataset")
 
 g2 <- quickscatter(ww_sample, "alcohol", "density", "Sample from dataset")
@@ -1095,6 +1401,7 @@ Strong linear relationship. The large outlier has already been examined.
 
 ```{r bi-total-so2-density}
 
+# Display scatterplots of the full dataset and the sample together.
 g1 <- quickscatter(ww, "total.so2", "density", "Full dataset")
 
 g2 <- quickscatter(ww_sample, "total.so2", "density", "Sample from dataset")
@@ -1108,6 +1415,7 @@ Moderate linear relationship. The large outlier has already been examined.
 
 ```{r bi-alcohol-sugar}
 
+# Display scatterplots of the full dataset and the sample together.
 g1 <- quickscatter(ww, "alcohol", "sugar", "Full dataset")
 
 g2 <- quickscatter(ww_sample, "alcohol", "sugar", "Sample from dataset")
@@ -1124,6 +1432,7 @@ reduced. There are also many cases where both low alcohol and low sugar occur.
 
 ```{r bi-total-so2-alcohol}
 
+# Display scatterplots of the full dataset and the sample together.
 g1 <- quickscatter(ww, "total.so2", "alcohol", "Full dataset")
 
 g2 <- quickscatter(ww_sample, "total.so2", "alcohol", "Sample from dataset")
@@ -1138,6 +1447,7 @@ Moderate linear relationship with some asymmetry of the 'cloud'.
 
 ```{r bi-ph-fixed}
 
+# Display scatterplots of the full dataset and the sample together.
 g1 <- quickscatter(ww, "pH", "fixed", "Full dataset")
 
 g2 <- quickscatter(ww_sample, "pH", "fixed", "Sample from dataset")
@@ -1164,6 +1474,7 @@ include fewer wines. Looking at the frequencies again:
 
 ```{r quality-category-value-counts}
 
+# Display table of quality value counts.
 table(ww$quality)
 
 ```
@@ -1226,6 +1537,7 @@ put density on the y-axis.
 
 ```{r multi-quality-alcohol-density}
 
+# Scatter plot with linear regression (lm) line. 
 ggplot(aes(x = alcohol, y = density, color = quality.cat), data = ww) + 
   geom_jitter(alpha = 0.5, width=0.1, size = 1.5) +
   coord_cartesian(ylim = c(0.985, 1.005)) +
@@ -1247,7 +1559,7 @@ Now look at alcohol and sugar. Sugar is fermented into alcohol, so put alcohol
 on the y-axis. 
 
 ```{r multi-quality-sugar-alcohol}
-
+# Scatter plot with linear regression (lm) line. 
 ggplot(aes(x = sugar, y = alcohol, color = quality.cat), data = ww) + 
   geom_point(alpha = 0.5, size = 1.5) +
   coord_cartesian(xlim = c(0, 25), ylim=c(8, 15)) +
@@ -1269,6 +1581,8 @@ to see whether residual sugar or alcohol as more influence on density.
 
 ```{r multi-quality-sugar-alcohol-density}
 
+# Cuts the range of density into 12 equal sections and displays them
+# as facets of individual plots with linear regression line (lm). 
 ggplot(aes(x = sugar, y = alcohol, color = quality.cat), data = ww) + 
   geom_point(alpha = 1, size = 1, shape = 16) +
   coord_cartesian(xlim = c(0, 25)) +
@@ -1285,6 +1599,8 @@ more slope in the lines with low alcohol/high density. Let's swap alcohol and de
 
 ```{r multi-quality-density-alcohol-facet-sugar}
 
+# Cuts the range of residual sugar into 12 equal sections and displays them
+# as facets of individual plots with linear regression line (lm). 
 ggplot(aes(x = density, y = alcohol, color = quality.cat), data = ww) + 
   geom_point(alpha = 1, size = 1, shape = 16) +
   coord_cartesian(xlim = c(0.985, 1.005)) +
@@ -1305,7 +1621,8 @@ related, I choose residual sugar (y) and total so2 (x). I'm going to facet on
 quality. 
 
 ```{r multi-total-so2-sugar-facet-quality}
-
+# Showws individual plots with linear regression line (lm) faceted by 
+# quality category. 
 ggplot(aes(x = total.so2, y = sugar), data = ww) + 
   geom_point(alpha = 0.5, size = 0.5, shape = 16) +
   facet_wrap(~ quality.cat) +
@@ -1320,6 +1637,8 @@ categories. Try again with alcohol and density.
 
 ```{r multi-alcohol-density-facet-quality}
 
+# Showws individual plots with linear regression line (lm) faceted by 
+# quality category.
 ggplot(aes(x = alcohol, y = density), data = ww) + 
   geom_jitter(alpha = 0.5, width=0.1, size = 0.5, shape = 16) +
   facet_wrap(~ quality.cat) +
@@ -1336,6 +1655,7 @@ Now let's look at some of the other variables.
 
 ```{r multi-quality-sulphates-total-so2}
 
+# Scatter plot with linear regression (lm) line. 
 ggplot(aes(x = sulphates, y = total.so2, color = quality.cat), data = ww) + 
   geom_point(alpha = 0.5, size = 1.5) +
   geom_smooth(method = "lm", color = "red") +
@@ -1351,6 +1671,7 @@ I'm curious if free so2 looks any different.
 
 ```{r multi-quality-free-so2-total-so2}
 
+# Scatter plot with linear regression (lm) line. 
 ggplot(aes(x = free.so2, y = total.so2, color = quality.cat), data = ww) + 
   geom_point(alpha = 0.5, size = 1.5) +
   geom_smooth(method = "lm", color = "red") +
@@ -1367,6 +1688,7 @@ so would probably be more important in a partitioning model.
 
 ```{r multi-quality-fixed-volatile}
 
+# Scatter plot with linear regression (lm) line. 
 ggplot(aes(x = fixed, y = volatile, color = quality.cat), data = ww) + 
   geom_point(alpha = 0.5, size = 1.5) +
   geom_smooth(method = "lm", color = "red") +
@@ -1381,6 +1703,7 @@ It's hard to tell which one would partition better.
 
 ```{r multi-quality-chlorides-ph}
 
+# Scatter plot with linear regression (lm) line. 
 ggplot(aes(x = chlorides, y = pH, color = quality.cat), data = ww) + 
   geom_point(alpha = 0.5, size = 1.5) +
   geom_smooth(method = "lm", color = "red") +
@@ -1398,6 +1721,7 @@ Finally, one of the relationships found earlier: pH and fixed acidity.
 
 ```{r multi-quality-fixed-ph}
 
+# Scatter plot with linear regression (lm) line. 
 ggplot(aes(x = fixed, y = pH, color = quality.cat), data = ww) + 
   geom_point(alpha = 0.5, size = 1.5) +
   geom_smooth(method = "lm", color = "red") +
@@ -1464,6 +1788,7 @@ with reducing the relative error.
 ```{r model-rpart-no-penalties}
 
 # Requires formula format.
+# The cp=0 in control forces penalties by cp to be ignored. 
 modelTree <- rpart(formula_continuous, data = treeTrain, 
                    control = list(cp = 0))
 
@@ -1477,6 +1802,7 @@ Optimization should stop at around 5 nodes. Now let the caret package decide.
 
 ```{r model-rpart-optimum}
 
+# This time it will stop according to cp criteria.
 modelTree <- rpart(formula_continuous, data = treeTrain)
 
 plotcp(modelTree)
@@ -1488,6 +1814,7 @@ It decided on 6. Let's see what variables it selected.
 
 ```{r model-rpart-final-model}
 
+# Prints out the variables used in the tree and cp detailed table.
 printcp(modelTree)
 
 ```
@@ -1498,7 +1825,8 @@ hard to see when viewing the variables two at a time.
 
 ```{r model-rpart-plot}
 
-# Extra 101 adds count n to the output.
+# Plot the tree with 3 digit values. Extra 101 adds count n to the output.
+# Type is selected from different presentation styles. 
 rpart.plot(modelTree, digits = 3, extra = 101, type =3)
 
 ```
@@ -1508,6 +1836,7 @@ Plot the left branch of the decision tree.
 
 ```{r model-rpart-left}
 
+# Added horizontal and vertical reference lines with hline and vline.
 ggplot(aes(x = volatile, y = alcohol, color = quality.cat), data = treeTrain) + 
   geom_point(alpha = 0.5, size = 1.5) +
   coord_cartesian(ylim=c(8, 15)) +
@@ -1528,6 +1857,7 @@ Now plot the right branch of the decision tree.
 
 ```{r model-rpart-right}
 
+# Added horizontal and vertical reference lines with hline and vline.
 ggplot(aes(x = free.so2, y = alcohol, color = quality.cat), data = treeTrain) + 
   geom_point(alpha = 0.5, size = 1.5) +
   coord_cartesian(ylim=c(8, 15)) +
@@ -1553,6 +1883,7 @@ First make a set of predictions with the test data.
 
 ```{r model-rpart-predict}
 
+# Apply the prediction model to the test data. 
 predictionsTree <- predict(modelTree, treeTest)
 
 ```
@@ -1563,6 +1894,7 @@ Compare predictions to observations. First the predictions statistics:
 
 ```{r model-rpart-fitted-values}
 
+# Summarize the prediction results.
 summary(predictionsTree)
 
 ```
@@ -1571,6 +1903,7 @@ Then statistics for the observations being predicted (in the test set):
 
 ```{r model-rpart-original-values}
 
+# Summarize the quality continuous variable in the test data. 
 summary(treeTest$quality)
 
 ```
@@ -1579,6 +1912,7 @@ We are not predicting beyond categories 5 and 6.
 
 ```{r model-rpart-quality-value-counts}
 
+# Summarize the quality categorical variable in the test data. 
 summary(treeTest$quality.cat)
 
 ```
@@ -1588,6 +1922,8 @@ Calculate the RMSE metric from the observations and predictions.
 
 ```{r model-rpart-rmse}
 
+# Caculate the Root Mean Square Error, the standard deviation of the 
+# residuals, i.e. the prediction errors. 
 RMSE(obs = treeTest$quality, pred = predictionsTree)
 
 ```
@@ -1601,6 +1937,8 @@ default 3 values of Cp, we'll do 30.
 
 ```{r model-rpart-caret, echo=FALSE, messages=FALSE, warning=FALSE}
 
+# Continue to use the formula as previously defined. 
+# Cross-validations are repeated for the rpart model. 
 trCtrl = trainControl(method = "repeatedcv", repeats = 3)
 
 modelRpartCaret <- train(formula_continuous, data = treeTrain, 
@@ -1617,6 +1955,7 @@ Visualize the model.
 
 ```{r model-rpart-caret-final-plot, fig.width=14}
 
+# Plot the final model, up to 3 digits and type 3 presentation style. 
 rpart.plot(modelRpartCaret$finalModel, digits = 3, type = 3 )
 
 ```
@@ -1628,6 +1967,7 @@ Plot the importance of the variables as determined by the model.
 
 ```{r model-rpart-caret-important-variables}
 
+# Plot the relative importance of the variables. 
 plot(varImp(modelRpartCaret))
 
 ```
@@ -1641,6 +1981,8 @@ Would a simple linear regression model do better?
 
 ```{r model-linear}
 
+# Cross-validations are repeated for the linear regression model. 
+# The metric used to select optimal model is the RSME. 
 trCtrl = trainControl(method = "repeatedcv", number = 10, repeats = 3)
 
 modelLM <- train(formula_continuous, data = treeTrain, 
@@ -1657,6 +1999,7 @@ What does this model think are important variables?
 
 ```{r model-linear-variable-importance, fig.cap="Linear model variable importance"}
 
+# Plot the relative importance of the variables. 
 plot(varImp(modelLM))
 
 ```
@@ -1670,6 +2013,9 @@ standard deviation). So run the same model with standardization.
 
 ```{r model-linear-preprocess}
 
+# Cross-validations are repeated for the linear regression model. 
+# The metric used to select optimal model is the RSME. 
+# Preprocessing to center and scale all the variables is applied. 
 trCtrl = trainControl(method = "repeatedcv", number = 10, repeats = 3)
 
 modelLMstd <- train(formula_continuous, data = treeTrain,
@@ -1689,6 +2035,7 @@ of 0.70.
 
 ```{r model-linear-correlation-matrix}
 
+# Build a correlation matrix and then identify predictors over the cutoff.
 corMat <-cor(treeTrain[1:11])
 highCor <- findCorrelation(corMat, cutoff=.70, names = TRUE)
 sprintf("Predictors over 0.70 correlation cutoff: %s", highCor)
@@ -1711,6 +2058,10 @@ formula_reduced
 Now run the model.
 
 ```{r model-linear-reduced}
+
+# Cross-validations are repeated for the linear regression model. 
+# The metric used to select optimal model is the RSME. 
+# Preprocessing to center and scale all the variables is applied. 
 trCtrl = trainControl(method = "repeatedcv", number = 10, repeats = 3)
 
 modelLMstdRed <- train(formula_reduced, data = treeTrain, 
@@ -1731,6 +2082,11 @@ to best capture 95% of the variance. (Density is back in).
 
 ```{r model-linear-pca}
 
+# Cross-validations are repeated for the linear regression model. 
+# The metric used to select optimal model is the RSME. 
+# Preprocessing to center and scale all the variables is applied. 
+# Additional preprocessing selects variables by prinicípal component
+# analysis (default variables sufficient for 95% of variance).
 trCtrl = trainControl(method = "repeatedcv", number = 10, repeats = 3)
 
 modelLMstdPca <- train(formula_continuous, data = treeTrain,
@@ -1749,6 +2105,7 @@ Going back to the model without density, look at the variable importance.
 
 ```{r model-linear-reduced-variable-importance, fig.cap="Reduced standardized linear model variable importance"}
 
+# Plot the relative importance of the variables. 
 plot(varImp(modelLMstdRed))
 
 ```
@@ -1757,6 +2114,7 @@ Now look at what the recursive partitioning in caret determined.
 
 ```{r model-tune-variable-importance, fig.cap="Recursive partitioning model variable importance"}
 
+# Plot the relative importance of the variables. 
 plot(varImp(modelRpartCaret))
 
 ```
@@ -1778,6 +2136,10 @@ parameters.
 
 ```{r model-svm-linear}
 
+# Cross-validations are repeated for the SVM linear regression model. 
+# The metric used to select optimal model is the accuracy. 
+# Preprocessing to center and scale all the variables is applied.
+# Note the formula here is for category, not continuous.
 trCtrl = trainControl(method = "repeatedcv", number = 10, repeats = 3)
 
 modelSVMlin <- train(formula_category, data = treeTrain, 
@@ -1794,6 +2156,8 @@ Accuracy is poor. We can look at the confusion matrix to see what it means.
 
 ```{r model-svm-linear-confusion}
 
+# Generate predictions using the final model on the test data.
+# Display the confusion matrix to compare actual and predicted quality. 
 predictionsSVMlin <- predict(modelSVMlin, treeTest)
 confusionMatrix(predictionsSVMlin, treeTest$quality.cat)
 
@@ -1805,6 +2169,7 @@ accuracy is so low.
 
 ```{r model-svm-linear-variable-importance, fig.cap = "SVM linear model variable importance"}
 
+# Plot the relative importance of the variables. 
 plot(varImp(modelSVMlin))
 
 ```
@@ -1819,6 +2184,10 @@ relationship across all categories.
 
 ```{r model-svm-non-linear}
 
+# Cross-validations are repeated for the SVM non-linear regression model. 
+# The metric used to select optimal model is the accuracy. 
+# Preprocessing to center and scale all the variables is applied.
+# Note the formula here is for category, not continuous.
 trCtrl = trainControl(method = "repeatedcv", number = 10, repeats = 3)
 
 modelSVMrad <- train(formula_category, data = treeTrain, 
@@ -1835,6 +2204,8 @@ The accuracy seems higher. Let's see how that impacts the confusion matrix.
 
 ```{r model-svm-non-linear-confusion}
 
+# Generate predictions using the final model on the test data.
+# Display the confusion matrix to compare actual and predicted quality.
 predictionsSVMrad <- predict(modelSVMrad, treeTest)
 confusionMatrix(predictionsSVMrad, treeTest$quality.cat)
 
@@ -1848,6 +2219,7 @@ Generate the variable importance.
 
 ```{r model-svm-non-linear-variable-importance, fig.cap = "SVM non-linear model variable importance"}
 
+# Plot the relative importance of the variables. 
 plot(varImp(modelSVMrad))
 
 ```
@@ -1861,6 +2233,10 @@ the RMSE value and compare to the other models.
 
 ```{r model-svm-non-linear-rmse}
 
+# Cross-validations are repeated for the SVM non-linear regression model. 
+# The metric used to select optimal model is the accuracy. 
+# Preprocessing to center and scale all the variables is applied.
+# Note the formula here is continuous.
 trCtrl = trainControl(method = "repeatedcv", number = 10, repeats = 3)
 
 modelSVMradQ <- train(formula_continuous, data = treeTrain, 
@@ -1878,6 +2254,8 @@ an issue with the early rpart models.
 
 ```{r model-svm-non-linear-rsme-summary}
 
+# Generate predictions using the final model on the test data.
+# Display a summary of the predictions achieved.
 predictionsSVMradQ <- predict(modelSVMradQ, treeTest)
 summary(predictionsSVMradQ)
 
@@ -1890,6 +2268,7 @@ Look at the variable importance.
 
 ```{r model-svm-non-linear-rsme-variable-importance, fig.cap="Continuous SVM non-linear model variable importance"}
 
+# Plot the relative importance of the variables. 
 plot(varImp(modelSVMradQ))
 
 ```
@@ -1913,6 +2292,9 @@ SVRQ non-linear SVM (radial)
 
 ```{r model-compare-continuous-summary}
 
+# Arranges the performance of the various models into a table. 
+# Note that the metrics used to optimize the models must be the same.
+# For this reason, only the continuous models are included. 
 results_continuous <- resamples(list(RPT=modelRpartCaret, LM=modelLM, 
                           LMS=modelLMstd, LMSR=modelLMstdRed, 
                           LMSP=modelLMstdPca, SVRQ=modelSVMradQ))
@@ -1925,6 +2307,7 @@ Visualize the values with confidence intervals.
 
 ```{r model-compare-continuous-dotplot, fig.cap = "Continuous model metric comparison"}
 
+# Display the comparison results on a dot plot. 
 dotplot(results_continuous)
 
 ```
@@ -1942,6 +2325,9 @@ SVMR non-linear SVM (radial)
 
 ```{r model-compare-categorical-summary}
 
+# Arranges the performance of the various models into a table. 
+# Note that the metrics used to optimize the models must be the same.
+# For this reason, only the categorical models are included. 
 results_categorical <- resamples(list(SVML=modelSVMlin,SVMR=modelSVMrad))
 summary(results_categorical)
 
@@ -1952,6 +2338,7 @@ Visualize the values with confidence intervals.
 
 ```{r model-compare-categorical-dotplot, fig.cap = "Categorical model metric comparison"}
 
+# Display the comparison results on a dot plot. 
 dotplot(results_categorical)
 
 ```
@@ -2043,9 +2430,11 @@ speculation and there is no data to distinguish these in the dataset.
 
 ```{r plot-one, fig.cap="Relationship between Alcohol, Residual Sugar and Quality in White Wine"}
 
+# Prepare the title string. 
 pt = paste("Alcohol by residual sugar and quality ",
            "(quality scale 0-10, best rating is 10)")
 
+# Same plot as previously but with added title and labels. 
 ggplot(aes(x = sugar, y = alcohol, color = quality.cat), data = ww) +
   geom_point(alpha = 0.5, size = 1.5) +
   coord_cartesian(xlim = c(0, 25), ylim=c(8, 15)) +
@@ -2077,9 +2466,11 @@ alcohol content.
 
 ### Plot Two
 
-```{r plot-two, fig.cap="Recursive partitioning tree using 'rpart' package"}
+```{r plot-two, fig.cap="Recursive partitioning and regression tree using 'rpart' package"}
 
-rpart.plot(modelTree, digits = 3, extra = 101, type =3)
+# Same plot as previously but with added title. 
+rpart.plot(modelTree, digits = 3, extra = 101, type =3,
+           main="Decision tree for explanatory variables")
 
 ```
 
@@ -2101,7 +2492,10 @@ and then visualized, they might then show the subsequent splits more clearly.
 
 ```{r plot-three, fig.cap="Most important variables from recursive partitioning in 'caret' package"}
 
-plot(varImp(modelRpartCaret))
+# Same plot as previously but with added title and y-axis label. 
+# The x-axis label is already provided. 
+plot(varImp(modelRpartCaret), ylab = "Explanatory variables",
+     main="Relative importance of explanatory variables (100 is high)")
 
 ```
 
@@ -2138,7 +2532,7 @@ this analysis.
 The mean_box helper function was supposed to be a time-saver but
 I had difficulties passing the arguments into the groupby and aesthetics and
 there is probably a more elegant way of doing that. I burnt more time than
-I saved, but I learned a lot. 
+I saved, but I learned a lot. I will use this function again. 
 
 I struggled with getting the right mixture of granularity and color for the
 multivariate plots. 
@@ -2185,6 +2579,8 @@ Now I'm looking forward to a glass of wine...
 
 [6] <https://stackoverflow.com/questions/38220963/how-to-pass-a-variable-name-in-group-b>  
 
-[7] <https://stackoverflow.com/questions/41783396/passing-arguments-to-dplyr-summarize-function>  
+[7] <https://stackoverflow.com/questions/41783396/passing-arguments-to-dplyr-summarize-function> 
+
+[8] <https://stackoverflow.com/questions/44141193/apply-jittering-to-outliers-data-in-a-boxplot-with-ggplot2>
 
 

@@ -13,3 +13,5 @@ List of references - EDA project - Alan Glasper - Version 1.0
 [6] https://stackoverflow.com/questions/38220963/how-to-pass-a-variable-name-in-group-b
 
 [7] https://stackoverflow.com/questions/41783396/passing-arguments-to-dplyr-summarize-function
+
+[8] <https://stackoverflow.com/questions/44141193/apply-jittering-to-outliers-data-in-a-boxplot-with-ggplot2>
